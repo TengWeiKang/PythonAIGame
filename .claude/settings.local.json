@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(del \"test_webcam_layout.py\")",
+      "Bash(python:*)",
+      "Bash(del test_settings_system.py)",
+      "Bash(\".venv/Scripts/python.exe\":*)",
+      "Bash(del test_settings_dialog.py)",
+      "Bash(tree:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

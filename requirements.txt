@@ -1,0 +1,13 @@
+opencv-python>=4.10.0
+numpy>=2.0.0
+pillow>=10.3.0
+tk
+torch  # install specific CUDA wheel manually if GPU desired
+pytest>=8.2.0
+ultralytics>=8.0.0  # optional (YOLO); code stubs gracefully if missing
+# transformers>=4.42.0  # optional NLP/local text generation
+# chatgpt-oss  # optional local-only kid-friendly phrasing
+# onnxruntime-gpu  # optional acceleration
+transformers
+kernels
+google-generativeai

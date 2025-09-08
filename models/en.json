@@ -1,0 +1,16 @@
+{
+  "app_title": "Webcam Master Checker",
+  "btn_start": "Start Detection",
+  "btn_stop": "Stop",
+  "btn_capture": "Capture Image",
+  "btn_annotate": "Annotate Image",
+  "btn_train": "Train Model",
+  "btn_load_master": "Load Master Image",
+  "btn_export": "Export Results",
+  "status_ready": "Ready",
+  "status_training": "Training...",
+  "status_detecting": "Detecting...",
+  "legend_good": "✅ Good (in place)",
+  "legend_offset": "⚠️ Slightly off",
+  "legend_missing": "❌ Missing"
+}
