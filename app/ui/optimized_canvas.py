@@ -7,11 +7,15 @@ import numpy as np
 from PIL import Image, ImageTk
 import threading
 import time
+import logging
 from typing import Optional, Tuple, Callable, Any
 from collections import deque
 
 from ..core.performance import performance_timer, LRUCache, PerformanceMonitor
 from ..core.cache_manager import generate_image_hash
+
+# Initialize logger for this module
+logger = logging.getLogger(__name__)
 
 class OptimizedCanvas(Canvas):
     """High-performance canvas with optimized image rendering."""
@@ -429,7 +433,9 @@ class ChatCanvas(Canvas):
             
             try:
                 self.yview_moveto(current_pos / self.bbox("all")[3] if self.bbox("all") else 0)
-            except:
+            except (ZeroDivisionError, AttributeError, tk.TclError) as e:
+                # Canvas not ready or invalid state - skip this scroll step
+                logger.debug(f"Scroll operation failed: {e}")
                 pass
             
             # Schedule next step

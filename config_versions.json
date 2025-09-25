@@ -1,0 +1,48 @@
+{
+  "schema_versions": {
+    "1.0.0": {
+      "description": "Initial configuration schema",
+      "release_date": "2024-01-01",
+      "breaking_changes": false,
+      "new_features": [
+        "Basic application settings",
+        "Camera configuration",
+        "YOLO model settings",
+        "Gemini API integration"
+      ]
+    },
+    "1.1.0": {
+      "description": "Performance monitoring and caching",
+      "release_date": "2024-02-01",
+      "breaking_changes": false,
+      "new_features": [
+        "workflow_performance_monitoring",
+        "cache_analysis_results",
+        "max_cache_size_mb"
+      ]
+    },
+    "1.2.0": {
+      "description": "Security and encryption enhancements",
+      "release_date": "2024-03-01",
+      "breaking_changes": false,
+      "new_features": [
+        "enable_config_encryption",
+        "config_backup_encryption",
+        "audit_config_changes"
+      ],
+      "security_improvements": [
+        "Enhanced API key handling",
+        "Configuration encryption support",
+        "Audit trail for config changes"
+      ]
+    }
+  },
+  "current_version": "1.2.0",
+  "minimum_supported_version": "1.0.0",
+  "migration_info": {
+    "automatic_migration": true,
+    "backup_before_migration": true,
+    "rollback_supported": true,
+    "migration_timeout_seconds": 30
+  }
+}

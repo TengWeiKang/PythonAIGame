@@ -144,6 +144,7 @@ class ComprehensiveSettingsDialog:
         self.debug_var = tk.BooleanVar()
         self.startup_fullscreen_var = tk.BooleanVar()
         self.remember_window_var = tk.BooleanVar()
+        self.remember_window_state_var = tk.BooleanVar()
         self.performance_mode_var = tk.StringVar()
         self.memory_limit_var = tk.IntVar()
         self.enable_logging_var = tk.BooleanVar()
@@ -216,6 +217,7 @@ class ComprehensiveSettingsDialog:
         self.debug_var.set(getattr(self.config, 'debug', False))
         self.startup_fullscreen_var.set(getattr(self.config, 'startup_fullscreen', False))
         self.remember_window_var.set(getattr(self.config, 'remember_window_state', True))
+        self.remember_window_state_var.set(getattr(self.config, 'remember_window_state', True))
         self.performance_mode_var.set(getattr(self.config, 'performance_mode', 'Balanced'))
         self.memory_limit_var.set(getattr(self.config, 'max_memory_usage_mb', 2048))
         self.enable_logging_var.set(getattr(self.config, 'enable_logging', True))
@@ -362,6 +364,7 @@ class ComprehensiveSettingsDialog:
         self.debug_var.trace('w', lambda *args: self._on_setting_changed('debug'))
         self.startup_fullscreen_var.trace('w', lambda *args: self._on_setting_changed('startup_fullscreen'))
         self.remember_window_var.trace('w', lambda *args: self._on_setting_changed('remember_window'))
+        self.remember_window_state_var.trace('w', lambda *args: self._on_setting_changed('remember_window_state'))
         self.performance_mode_var.trace('w', lambda *args: self._on_setting_changed('performance_mode'))
         self.memory_limit_var.trace('w', lambda *args: self._on_setting_changed('memory_limit'))
         self.enable_logging_var.trace('w', lambda *args: self._on_setting_changed('enable_logging'))
@@ -1387,14 +1390,8 @@ class ComprehensiveSettingsDialog:
         
         # Load current persona text
         current_persona = getattr(self.config, 'chatbot_persona', '')
-        if not current_persona.strip():
-            # Use default persona if empty
-            current_persona = """You are a helpful AI assistant for image analysis. Your role is to:
-1. Compare reference images with captured images
-2. Identify differences and changes
-3. Provide clear, detailed explanations
-4. Help users understand what has changed"""
-        
+        # Don't set default display text - persona should only define behavior, not display content
+        # Leave empty if no persona is configured
         self.persona_text.insert('1.0', current_persona)
         
         # Bind text changes to update the variable (for change tracking)
@@ -1585,7 +1582,33 @@ class ComprehensiveSettingsDialog:
         log_combo = ttk.Combobox(log_frame, textvariable=self.log_level_var,
                                 values=SettingsValidator.VALID_LOG_LEVELS, state='readonly', width=10)
         log_combo.pack(side='left')
-        
+
+        # Window Management Section
+        window_section, window_content = self._create_section_frame(scrollable_frame, "🖼️ Window Management")
+        window_section.pack(fill='x', pady=(10, 0))
+
+        # Window state options
+        window_options_frame = tk.Frame(window_content, bg=self.COLORS['bg_secondary'])
+        window_options_frame.pack(fill='x', pady=5)
+
+        self._create_checkbox(window_options_frame, "Remember window state and position",
+                             self.remember_window_state_var).pack(anchor='w', pady=2)
+
+        self._create_checkbox(window_options_frame, "Start in fullscreen mode",
+                             self.startup_fullscreen_var).pack(anchor='w', pady=2)
+
+        # Auto-save settings
+        auto_save_frame = tk.Frame(window_content, bg=self.COLORS['bg_secondary'])
+        auto_save_frame.pack(fill='x', pady=5)
+
+        tk.Label(auto_save_frame, text="Auto-save interval (minutes):", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+
+        autosave_spin = tk.Spinbox(auto_save_frame, from_=1, to=60, increment=1,
+                                 textvariable=self.auto_save_interval_var, bg=self.COLORS['bg_tertiary'],
+                                 fg=self.COLORS['text_primary'], width=8)
+        autosave_spin.pack(side='left', padx=(10, 0))
+
         return tab
     
     def _build_buttons(self, parent):
@@ -2149,7 +2172,7 @@ class ComprehensiveSettingsDialog:
             settings['auto_save_config'] = self.auto_save_var.get()
             settings['debug'] = self.debug_var.get()
             settings['startup_fullscreen'] = self.startup_fullscreen_var.get()
-            settings['remember_window_state'] = self.remember_window_var.get()
+            settings['remember_window_state'] = self.remember_window_state_var.get()
             settings['performance_mode'] = self.performance_mode_var.get()
             settings['max_memory_usage_mb'] = self.memory_limit_var.get()
             settings['enable_logging'] = self.enable_logging_var.get()
@@ -2553,10 +2576,9 @@ class ComprehensiveSettingsDialog:
                      if not result.is_valid and result.error_message]
             
             if errors:
-                error_msg = "Settings validation failed:\n\n" + "\n".join(errors[:5])  # Show first 5 errors
-                if len(errors) > 5:
-                    error_msg += f"\n... and {len(errors) - 5} more errors"
-                messagebox.showerror("Validation Error", error_msg)
+                # Show detailed validation errors with better UX
+                self._show_validation_errors(errors, validation_results)
+                self._show_status_message("Settings validation failed. Please fix errors above.", "error")
                 return False
             
             # Apply validated settings to config object
@@ -2588,7 +2610,7 @@ class ComprehensiveSettingsDialog:
             
             if not config_updated:
                 logger.info("No configuration changes detected")
-                self.validation_status_label.configure(text="No changes to apply", fg=self.COLORS['text_muted'])
+                self._show_status_message("No changes to apply", "info", duration=2000)
                 return True
             
             # Apply settings to running application immediately (real-time application)
@@ -2723,20 +2745,74 @@ class ComprehensiveSettingsDialog:
             raise Exception(f"Backup restoration failed: {e}") from e
     
     def _on_apply(self) -> None:
-        """Handle Apply button click with user feedback."""
-        if self._apply_changes():
-            # Success feedback is now handled in _apply_changes
-            pass
-        # Error feedback is handled in _apply_changes
+        """Handle Apply button click with enhanced user feedback and validation."""
+        # Show applying status
+        self.apply_button.configure(text="Applying...", state='disabled')
+        self.dialog.update_idletasks()
+
+        try:
+            success = self._apply_changes()
+            if success:
+                # Provide immediate success feedback
+                self._show_status_message("Settings applied successfully!", "success")
+
+                # Reset change tracking after successful application
+                self._changes_made = False
+                self.apply_button.configure(state='disabled')
+
+                # Update original values to current values for future change detection
+                self._update_original_values()
+
+                # Log successful application
+                logger.info("Settings applied successfully through Apply button")
+            else:
+                # Error feedback is handled within _apply_changes
+                logger.warning("Settings application failed through Apply button")
+        except Exception as e:
+            logger.error(f"Unexpected error in Apply button handler: {e}")
+            self._show_status_message(f"Unexpected error: {str(e)}", "error")
+        finally:
+            # Always restore button state
+            self.apply_button.configure(text="Apply")
+            if self._changes_made:
+                self.apply_button.configure(state='normal')
     
     def _on_ok(self) -> None:
-        """Handle OK button click with proper change detection and error handling."""
-        if self._changes_made:
-            if not self._apply_changes():
-                return  # Don't close if apply failed
-        
-        # Close dialog
-        self._on_cancel()
+        """Handle OK button click with comprehensive validation and state management."""
+        # If no changes, close immediately
+        if not self._changes_made:
+            logger.info("Closing settings dialog - no changes made")
+            self._close_dialog()
+            return
+
+        # Show processing status
+        original_text = "OK"
+        self._update_button_states(applying=True)
+
+        try:
+            # Apply changes with enhanced validation
+            success = self._apply_changes()
+
+            if success:
+                # Show brief success message before closing
+                self._show_status_message("Settings saved successfully!", "success", duration=1000)
+
+                # Wait briefly for user to see success message
+                self.dialog.after(1200, self._close_dialog)
+
+                logger.info("Settings applied and dialog will close")
+            else:
+                # Don't close if apply failed - let user fix issues
+                self._show_status_message("Please fix validation errors before closing", "warning")
+                logger.warning("Settings application failed - dialog remains open")
+
+        except Exception as e:
+            logger.error(f"Unexpected error in OK button handler: {e}")
+            self._show_status_message(f"Unexpected error: {str(e)}", "error")
+        finally:
+            # Restore button states if we're not closing
+            if self._changes_made:  # Only restore if we didn't succeed
+                self._update_button_states(applying=False)
     
     def _test_camera(self):
         """Test the selected camera with live preview."""
@@ -2902,25 +2978,311 @@ class ComprehensiveSettingsDialog:
             var.set(filename)
             self._mark_changed()
     
-    def _on_cancel(self):
-        """Handle Cancel button click."""
+    def _on_cancel(self) -> None:
+        """Handle Cancel button click with improved user experience."""
         # Stop any running camera test
         if self._preview_running:
             self._stop_test()
-        
+
+        # Handle unsaved changes with clear options
         if self._changes_made:
-            result = messagebox.askyesnocancel("Unsaved Changes", 
+            # Create custom dialog for better UX
+            result = self._show_unsaved_changes_dialog()
+
+            if result == "save":
+                # Try to save changes
+                if self._apply_changes():
+                    self._show_status_message("Settings saved!", "success", duration=800)
+                    self.dialog.after(1000, self._close_dialog)
+                else:
+                    # Don't close if save failed
+                    self._show_status_message("Please fix errors before closing", "warning")
+                    return
+            elif result == "discard":
+                # User chose to discard changes
+                logger.info("User discarded settings changes")
+                self._close_dialog()
+            else:  # result == "cancel" or dialog was closed
+                # User wants to continue editing
+                return
+        else:
+            # No changes, close immediately
+            self._close_dialog()
+
+    def _close_dialog(self) -> None:
+        """Safely close the dialog with proper cleanup."""
+        try:
+            # Stop any running camera test
+            if self._preview_running:
+                self._stop_test()
+
+            # Release modal grab and destroy
+            self.dialog.grab_release()
+            self.dialog.destroy()
+
+            logger.info("Settings dialog closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing settings dialog: {e}")
+
+    def _update_button_states(self, applying: bool) -> None:
+        """Update button states during apply operations."""
+        if applying:
+            # Disable all buttons during application
+            if hasattr(self, 'apply_button'):
+                self.apply_button.configure(text="Applying...", state='disabled')
+            if hasattr(self, 'ok_button'):
+                self.ok_button.configure(text="Applying...", state='disabled')
+            if hasattr(self, 'cancel_button'):
+                self.cancel_button.configure(state='disabled')
+        else:
+            # Restore normal button states
+            if hasattr(self, 'apply_button'):
+                self.apply_button.configure(text="Apply")
+                self.apply_button.configure(state='normal' if self._changes_made else 'disabled')
+            if hasattr(self, 'ok_button'):
+                self.ok_button.configure(text="OK", state='normal')
+            if hasattr(self, 'cancel_button'):
+                self.cancel_button.configure(state='normal')
+
+    def _show_status_message(self, message: str, message_type: str = "info", duration: int = 3000) -> None:
+        """Show status message with appropriate styling and auto-hide."""
+        try:
+            # Create status frame if it doesn't exist
+            if not hasattr(self, 'status_frame'):
+                self._create_status_frame()
+
+            # Update status message with color coding
+            colors = {
+                'success': self.COLORS['success'],
+                'error': self.COLORS['error'],
+                'warning': self.COLORS['warning'],
+                'info': self.COLORS['accent_primary']
+            }
+
+            color = colors.get(message_type, self.COLORS['text_primary'])
+
+            if hasattr(self, 'status_label'):
+                self.status_label.configure(text=message, fg=color)
+                self.status_frame.pack(fill='x', pady=(5, 0))
+
+                # Auto-hide after duration
+                if duration > 0:
+                    self.dialog.after(duration, self._hide_status_message)
+
+        except Exception as e:
+            logger.error(f"Error showing status message: {e}")
+            # Fallback to messagebox if status frame fails
+            messagebox.showinfo("Status", message)
+
+    def _create_status_frame(self) -> None:
+        """Create status message frame if it doesn't exist."""
+        try:
+            # Find the main frame (should be the first child)
+            main_frame = None
+            for child in self.dialog.winfo_children():
+                if isinstance(child, tk.Frame):
+                    main_frame = child
+                    break
+
+            if main_frame:
+                self.status_frame = tk.Frame(main_frame, bg=self.COLORS['bg_secondary'],
+                                           relief='solid', bd=1)
+                self.status_label = tk.Label(
+                    self.status_frame,
+                    text="",
+                    bg=self.COLORS['bg_secondary'],
+                    fg=self.COLORS['text_primary'],
+                    font=('Segoe UI', 9),
+                    pady=8
+                )
+                self.status_label.pack(fill='x')
+
+        except Exception as e:
+            logger.error(f"Error creating status frame: {e}")
+
+    def _hide_status_message(self) -> None:
+        """Hide the status message frame."""
+        try:
+            if hasattr(self, 'status_frame'):
+                self.status_frame.pack_forget()
+        except Exception as e:
+            logger.error(f"Error hiding status message: {e}")
+
+    def _show_unsaved_changes_dialog(self) -> str:
+        """Show enhanced dialog for unsaved changes with clear options."""
+        try:
+            # Custom dialog with better UX than messagebox
+            from tkinter import simpledialog
+
+            dialog = tk.Toplevel(self.dialog)
+            dialog.title("Unsaved Changes")
+            dialog.geometry("400x150")
+            dialog.configure(bg=self.COLORS['bg_primary'])
+            dialog.transient(self.dialog)
+            dialog.grab_set()
+
+            # Center on parent
+            dialog.update_idletasks()
+            x = self.dialog.winfo_rootx() + (self.dialog.winfo_width() // 2) - (dialog.winfo_width() // 2)
+            y = self.dialog.winfo_rooty() + (self.dialog.winfo_height() // 2) - (dialog.winfo_height() // 2)
+            dialog.geometry(f"+{x}+{y}")
+
+            result = {"value": "cancel"}
+
+            # Message
+            message_frame = tk.Frame(dialog, bg=self.COLORS['bg_primary'])
+            message_frame.pack(fill='x', expand=True, padx=20, pady=20)
+
+            icon_label = tk.Label(message_frame, text="⚠️", bg=self.COLORS['bg_primary'],
+                                fg=self.COLORS['warning'], font=('Segoe UI', 16))
+            icon_label.pack(side='left', padx=(0, 10))
+
+            text_label = tk.Label(message_frame,
+                                text="You have unsaved changes.\nWhat would you like to do?",
+                                bg=self.COLORS['bg_primary'], fg=self.COLORS['text_primary'],
+                                font=('Segoe UI', 10), justify='left')
+            text_label.pack(side='left')
+
+            # Buttons
+            button_frame = tk.Frame(dialog, bg=self.COLORS['bg_primary'])
+            button_frame.pack(fill='x', padx=20, pady=(0, 20))
+
+            def set_result(value):
+                result["value"] = value
+                dialog.destroy()
+
+            save_btn = tk.Button(button_frame, text="Save Changes",
+                               command=lambda: set_result("save"),
+                               bg=self.COLORS['success'], fg='white', relief='flat',
+                               font=('Segoe UI', 9), pady=8, padx=15)
+            save_btn.pack(side='right', padx=(5, 0))
+
+            discard_btn = tk.Button(button_frame, text="Discard Changes",
+                                  command=lambda: set_result("discard"),
+                                  bg=self.COLORS['error'], fg='white', relief='flat',
+                                  font=('Segoe UI', 9), pady=8, padx=15)
+            discard_btn.pack(side='right', padx=(5, 0))
+
+            cancel_btn = tk.Button(button_frame, text="Continue Editing",
+                                 command=lambda: set_result("cancel"),
+                                 bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'],
+                                 relief='flat', font=('Segoe UI', 9), pady=8, padx=15)
+            cancel_btn.pack(side='right', padx=(5, 0))
+
+            # Wait for dialog
+            dialog.wait_window()
+            return result["value"]
+
+        except Exception as e:
+            logger.error(f"Error showing unsaved changes dialog: {e}")
+            # Fallback to standard messagebox
+            result = messagebox.askyesnocancel("Unsaved Changes",
                                               "You have unsaved changes. Save before closing?")
-            if result is True:  # Yes, save
-                if not self._apply_changes():
-                    return  # Don't close if save failed
-            elif result is None:  # Cancel
-                return  # Don't close
-            # result is False means No, don't save - continue closing
-        
-        self.dialog.grab_release()
-        self.dialog.destroy()
-    
+            if result is True:
+                return "save"
+            elif result is False:
+                return "discard"
+            else:
+                return "cancel"
+
+    def _update_original_values(self) -> None:
+        """Update original values after successful settings application."""
+        try:
+            self.original_values = self._collect_current_settings()
+            logger.debug("Original values updated after successful settings application")
+        except Exception as e:
+            logger.error(f"Error updating original values: {e}")
+
+    def _show_validation_errors(self, errors: List[str], validation_results: Dict[str, Any]) -> None:
+        """Show comprehensive validation errors with improved user experience."""
+        try:
+            # Create validation error dialog
+            error_dialog = tk.Toplevel(self.dialog)
+            error_dialog.title("Settings Validation Errors")
+            error_dialog.geometry("600x400")
+            error_dialog.configure(bg=self.COLORS['bg_primary'])
+            error_dialog.transient(self.dialog)
+            error_dialog.grab_set()
+
+            # Center on parent
+            error_dialog.update_idletasks()
+            x = self.dialog.winfo_rootx() + (self.dialog.winfo_width() // 2) - (error_dialog.winfo_width() // 2)
+            y = self.dialog.winfo_rooty() + (self.dialog.winfo_height() // 2) - (error_dialog.winfo_height() // 2)
+            error_dialog.geometry(f"+{x}+{y}")
+
+            # Header
+            header_frame = tk.Frame(error_dialog, bg=self.COLORS['bg_primary'])
+            header_frame.pack(fill='x', padx=20, pady=(20, 10))
+
+            error_icon = tk.Label(header_frame, text="⚠️", bg=self.COLORS['bg_primary'],
+                                fg=self.COLORS['error'], font=('Segoe UI', 20))
+            error_icon.pack(side='left', padx=(0, 10))
+
+            title_label = tk.Label(header_frame,
+                                 text="Settings Validation Failed",
+                                 bg=self.COLORS['bg_primary'], fg=self.COLORS['text_primary'],
+                                 font=('Segoe UI', 14, 'bold'))
+            title_label.pack(side='left')
+
+            subtitle_label = tk.Label(header_frame,
+                                    text=f"Please fix {len(errors)} error(s) before applying settings:",
+                                    bg=self.COLORS['bg_primary'], fg=self.COLORS['text_secondary'],
+                                    font=('Segoe UI', 10))
+            subtitle_label.pack(side='left', padx=(10, 0))
+
+            # Scrollable error list
+            list_frame = tk.Frame(error_dialog, bg=self.COLORS['bg_primary'])
+            list_frame.pack(fill='both', expand=True, padx=20, pady=10)
+
+            # Create scrollable text widget for errors
+            text_frame = tk.Frame(list_frame, bg=self.COLORS['bg_secondary'])
+            text_frame.pack(fill='both', expand=True)
+
+            scrollbar = tk.Scrollbar(text_frame)
+            scrollbar.pack(side='right', fill='y')
+
+            error_text = tk.Text(text_frame,
+                               bg=self.COLORS['bg_secondary'],
+                               fg=self.COLORS['text_primary'],
+                               font=('Segoe UI', 9),
+                               wrap='word',
+                               yscrollcommand=scrollbar.set,
+                               height=15)
+            error_text.pack(side='left', fill='both', expand=True)
+            scrollbar.config(command=error_text.yview)
+
+            # Populate errors with formatting
+            for i, error in enumerate(errors, 1):
+                error_text.insert('end', f"{i}. {error}\n\n")
+
+            # Make text read-only
+            error_text.config(state='disabled')
+
+            # Buttons
+            button_frame = tk.Frame(error_dialog, bg=self.COLORS['bg_primary'])
+            button_frame.pack(fill='x', padx=20, pady=(10, 20))
+
+            def close_error_dialog():
+                error_dialog.destroy()
+
+            close_btn = tk.Button(button_frame, text="OK",
+                                command=close_error_dialog,
+                                bg=self.COLORS['accent_primary'], fg='white',
+                                relief='flat', font=('Segoe UI', 10),
+                                pady=8, padx=20)
+            close_btn.pack(side='right')
+
+            # Focus on dialog
+            error_dialog.focus_set()
+
+        except Exception as e:
+            logger.error(f"Error showing validation errors dialog: {e}")
+            # Fallback to simple messagebox
+            error_msg = "Settings validation failed:\n\n" + "\n".join(errors[:5])
+            if len(errors) > 5:
+                error_msg += f"\n... and {len(errors) - 5} more errors"
+            messagebox.showerror("Validation Error", error_msg)
+
     def winfo_exists(self):
         """Check if dialog window exists."""
         try:
@@ -2933,6 +3295,126 @@ class ComprehensiveSettingsDialog:
         if self.winfo_exists():
             self.dialog.lift()
             self.dialog.focus_set()
+
+    # Public API methods - delegate to private implementations
+    def apply_settings(self) -> bool:
+        """Apply settings immediately while keeping dialog open.
+
+        Returns:
+            bool: True if settings were applied successfully, False otherwise.
+        """
+        try:
+            self._on_apply()
+            return not self._changes_made  # True if changes were successfully applied
+        except Exception as e:
+            logger.error(f"Error in apply_settings: {e}")
+            return False
+
+    def ok_pressed(self) -> bool:
+        """Apply settings and close dialog if successful.
+
+        Returns:
+            bool: True if dialog was closed (settings applied or no changes), False if dialog remains open due to errors.
+        """
+        try:
+            dialog_exists_before = self.winfo_exists()
+            self._on_ok()
+            # Check if dialog still exists after _on_ok - if not, it was closed successfully
+            return not self.winfo_exists() if dialog_exists_before else True
+        except Exception as e:
+            logger.error(f"Error in ok_pressed: {e}")
+            return False
+
+    def cancel_pressed(self) -> bool:
+        """Handle cancel with unsaved changes confirmation.
+
+        Returns:
+            bool: True if dialog was closed, False if user chose to continue editing.
+        """
+        try:
+            dialog_exists_before = self.winfo_exists()
+            self._on_cancel()
+            # Check if dialog still exists after _on_cancel - if not, it was closed
+            return not self.winfo_exists() if dialog_exists_before else True
+        except Exception as e:
+            logger.error(f"Error in cancel_pressed: {e}")
+            return False
+
+    def validate_settings(self) -> Dict[str, Any]:
+        """Validate all settings and return detailed results.
+
+        Returns:
+            Dict[str, Any]: Validation results with detailed information about each setting.
+        """
+        try:
+            settings = self._collect_current_settings()
+            validation_results = SettingsValidator.validate_all_settings(settings)
+
+            # Update the validation display
+            self._validate_all_settings()
+
+            return validation_results
+        except Exception as e:
+            logger.error(f"Error in validate_settings: {e}")
+            return {}
+
+    def reset_to_defaults(self) -> bool:
+        """Reset all settings to default values.
+
+        Returns:
+            bool: True if reset was successful, False otherwise.
+        """
+        try:
+            self._reset_to_defaults()
+            return True
+        except Exception as e:
+            logger.error(f"Error in reset_to_defaults: {e}")
+            return False
+
+    def load_settings(self) -> bool:
+        """Load current settings into the UI.
+
+        Returns:
+            bool: True if settings were loaded successfully, False otherwise.
+        """
+        try:
+            self._load_current_settings()
+            return True
+        except Exception as e:
+            logger.error(f"Error in load_settings: {e}")
+            return False
+
+    def save_settings(self) -> bool:
+        """Save current settings from the UI to configuration.
+
+        Returns:
+            bool: True if settings were saved successfully, False otherwise.
+        """
+        try:
+            return self._apply_changes()
+        except Exception as e:
+            logger.error(f"Error in save_settings: {e}")
+            return False
+
+    def has_unsaved_changes(self) -> bool:
+        """Check if there are unsaved changes in the dialog.
+
+        Returns:
+            bool: True if there are unsaved changes, False otherwise.
+        """
+        return self._changes_made
+
+    def get_current_settings(self) -> Dict[str, Any]:
+        """Get the current settings from the UI without saving.
+
+        Returns:
+            Dict[str, Any]: Current settings from the UI components.
+        """
+        try:
+            return self._collect_current_settings()
+        except Exception as e:
+            logger.error(f"Error in get_current_settings: {e}")
+            return {}
 
 
 __all__ = ["ComprehensiveSettingsDialog"]

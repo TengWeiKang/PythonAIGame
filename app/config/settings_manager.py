@@ -14,13 +14,21 @@ import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Callable, List, TYPE_CHECKING
+from typing import Any, Dict, Optional, Callable, List, TYPE_CHECKING, Set
 import logging
 from dataclasses import asdict
 from contextlib import contextmanager
+import copy
 
 from .settings import Config, load_config, save_config
 from .defaults import DEFAULT_CONFIG
+from .atomic_applier import (
+    TransactionalSettingsApplier,
+    create_transactional_applier,
+    UpdateType,
+    ServicePriority
+)
+from .validation import SettingsValidator, ValidationResult
 
 if TYPE_CHECKING:
     from ..services.webcam_service import WebcamService
@@ -31,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 class SettingsManager:
     """Manages application settings with real-time updates and validation."""
-    
+
     def __init__(self, config_path: str = "config.json"):
         self.config_path = Path(config_path)
         self.backup_dir = Path("config_backups")
@@ -39,10 +47,22 @@ class SettingsManager:
         self._services: Dict[str, Any] = {}
         self._change_callbacks: List[Callable[[Config], None]] = []
         self._lock = threading.RLock()
-        
+
+        # Transactional settings applier for atomic updates
+        self._transactional_applier = create_transactional_applier()
+
+        # Settings validator
+        self._validator = SettingsValidator()
+
+        # Track changed categories for optimized updates
+        self._changed_categories: Set[str] = set()
+
+        # Previous config for differential tracking
+        self._previous_config: Optional[Config] = None
+
         # Ensure backup directory exists
         self.backup_dir.mkdir(exist_ok=True)
-        
+
         # Load initial configuration
         self._load_configuration()
     
@@ -57,6 +77,8 @@ class SettingsManager:
         """Register a service to receive settings updates."""
         with self._lock:
             self._services[name] = service
+            # Also register with transactional applier
+            self._transactional_applier.register_service(name, service)
             logger.debug(f"Registered service: {name}")
     
     def add_change_callback(self, callback: Callable[[Config], None]) -> None:
@@ -136,12 +158,13 @@ class SettingsManager:
             config = Config(extra=extra_fields)
             return config
     
-    def save_settings(self, config: Config) -> bool:
+    def save_settings(self, config: Config, use_atomic: bool = True) -> bool:
         """Save configuration to file with atomic operations and validation.
-        
+
         Args:
             config: Configuration object to save
-            
+            use_atomic: Whether to use atomic transactional updates
+
         Returns:
             bool: True if save was successful, False otherwise
         """
@@ -151,20 +174,36 @@ class SettingsManager:
                 if not self._validate_config(config):
                     logger.error("Configuration validation failed")
                     return False
-                
+
+                # Detect changed categories
+                changed_categories = self._detect_changed_categories(config)
+
                 # Create backup of current config
                 backup_path = None
                 if self.config_path.exists():
                     backup_path = self._create_backup()
-                
+
                 # Write to temporary file first (atomic operation)
                 temp_path = self.config_path.with_suffix('.tmp')
-                
+
                 config_dict = config.to_dict()
-                
+
                 with open(temp_path, 'w', encoding='utf-8') as f:
                     json.dump(config_dict, f, indent=2, ensure_ascii=False)
-                
+
+                # Apply settings to services
+                if use_atomic:
+                    # Use transactional applier for atomic updates
+                    success = self._transactional_applier.apply_settings(config, changed_categories)
+                    if not success:
+                        logger.error("Failed to apply settings atomically")
+                        # Don't save config file if service update failed
+                        temp_path.unlink()
+                        return False
+                else:
+                    # Use traditional non-atomic update
+                    self._apply_settings_to_services(config)
+
                 # Atomically replace the original file
                 if os.name == 'nt':  # Windows
                     if self.config_path.exists():
@@ -172,30 +211,31 @@ class SettingsManager:
                     temp_path.rename(self.config_path)
                 else:  # Unix-like systems
                     temp_path.replace(self.config_path)
-                
+
                 # Update internal config
+                self._previous_config = copy.deepcopy(self._config)
                 self._config = config
-                
-                # Apply settings to services
-                self._apply_settings_to_services(config)
-                
+
                 # Notify callbacks
                 self._notify_change_callbacks(config)
-                
+
                 logger.info(f"Configuration saved successfully to {self.config_path}")
                 return True
-                
+
             except Exception as e:
                 logger.error(f"Failed to save configuration: {e}")
-                
+
                 # Restore from backup if available
                 if backup_path and backup_path.exists():
                     try:
                         shutil.copy2(backup_path, self.config_path)
                         logger.info("Configuration restored from backup")
+                        # Also restore services to previous state if atomic was used
+                        if use_atomic and self._previous_config:
+                            self._transactional_applier.apply_settings(self._previous_config, None)
                     except Exception as restore_error:
                         logger.error(f"Failed to restore backup: {restore_error}")
-                
+
                 return False
     
     def load_settings(self) -> Config:
@@ -207,15 +247,34 @@ class SettingsManager:
         self._load_configuration()
         return self.config
     
-    def apply_settings(self, config: Config) -> None:
+    def apply_settings(self, config: Config, use_atomic: bool = True) -> bool:
         """Apply settings to running application services.
-        
+
         Args:
             config: Configuration to apply
+            use_atomic: Whether to use atomic transactional updates
+
+        Returns:
+            bool: True if settings were applied successfully
         """
         with self._lock:
-            self._apply_settings_to_services(config)
-            self._notify_change_callbacks(config)
+            if use_atomic:
+                # Detect changed categories
+                changed_categories = self._detect_changed_categories(config)
+                # Use transactional applier
+                success = self._transactional_applier.apply_settings(config, changed_categories)
+                if success:
+                    self._notify_change_callbacks(config)
+                    self._previous_config = copy.deepcopy(self._config)
+                    self._config = config
+                return success
+            else:
+                # Use traditional non-atomic update
+                self._apply_settings_to_services(config)
+                self._notify_change_callbacks(config)
+                self._previous_config = copy.deepcopy(self._config)
+                self._config = config
+                return True
     
     def _validate_config(self, config: Config) -> bool:
         """Validate configuration object.
@@ -417,6 +476,58 @@ class SettingsManager:
         except Exception as e:
             logger.error(f"Failed to apply analysis settings: {e}")
     
+    def _detect_changed_categories(self, new_config: Config) -> Set[str]:
+        """Detect which setting categories have changed."""
+        if not self._config:
+            # All categories are "changed" on first load
+            return {'camera', 'detection', 'ai', 'appearance', 'paths', 'advanced'}
+
+        changed = set()
+        old_dict = self._config.to_dict()
+        new_dict = new_config.to_dict()
+
+        # Category mappings
+        category_mappings = {
+            'camera': [
+                'last_webcam_index', 'camera_width', 'camera_height', 'camera_fps',
+                'camera_brightness', 'camera_contrast', 'camera_saturation',
+                'camera_auto_exposure', 'camera_auto_focus', 'camera_buffer_size',
+                'camera_recording_format'
+            ],
+            'detection': [
+                'detection_confidence_threshold', 'detection_iou_threshold',
+                'yolo_model', 'enable_roi', 'roi_x', 'roi_y', 'roi_width', 'roi_height',
+                'difference_sensitivity', 'use_gpu', 'enable_object_tracking'
+            ],
+            'ai': [
+                'gemini_api_key', 'gemini_model', 'gemini_temperature', 'gemini_timeout',
+                'gemini_max_tokens', 'enable_ai_analysis', 'chatbot_persona',
+                'response_format', 'enable_rate_limiting', 'requests_per_minute',
+                'context_window_size', 'enable_conversation_memory'
+            ],
+            'appearance': [
+                'app_theme', 'language', 'startup_fullscreen', 'remember_window_state',
+                'window_width', 'window_height', 'show_tooltips', 'show_status_bar'
+            ],
+            'paths': [
+                'data_dir', 'models_dir', 'results_export_dir', 'reference_image_path',
+                'default_data_dir', 'default_models_dir', 'default_results_dir'
+            ],
+            'advanced': [
+                'debug', 'enable_logging', 'log_level', 'performance_mode',
+                'max_memory_usage_mb', 'auto_save_config', 'auto_save_interval_minutes'
+            ]
+        }
+
+        # Check each category for changes
+        for category, fields in category_mappings.items():
+            for field in fields:
+                if old_dict.get(field) != new_dict.get(field):
+                    changed.add(category)
+                    break
+
+        return changed
+
     def _notify_change_callbacks(self, config: Config) -> None:
         """Notify all registered callbacks of configuration changes."""
         for callback in self._change_callbacks:
@@ -429,13 +540,20 @@ class SettingsManager:
     def atomic_update(self):
         """Context manager for atomic configuration updates."""
         with self._lock:
-            original_config = self._config
+            original_config = copy.deepcopy(self._config)
             try:
                 yield self._config
-                # Config is automatically saved when context exits normally
+                # Apply settings atomically when context exits normally
+                success = self.save_settings(self._config, use_atomic=True)
+                if not success:
+                    # Restore original if save failed
+                    self._config = original_config
+                    raise RuntimeError("Failed to save configuration atomically")
             except Exception:
                 # Restore original config on error
                 self._config = original_config
+                # Also restore service states
+                self._transactional_applier.apply_settings(original_config, None)
                 raise
     
     def reset_to_defaults(self) -> bool:
@@ -513,9 +631,17 @@ def get_settings_manager(config_path: str = "config.json") -> SettingsManager:
     return _settings_manager
 
 
-def save_settings(config: Config) -> bool:
-    """Save configuration using global settings manager."""
-    return get_settings_manager().save_settings(config)
+def save_settings(config: Config, use_atomic: bool = True) -> bool:
+    """Save configuration using global settings manager.
+
+    Args:
+        config: Configuration to save
+        use_atomic: Whether to use atomic transactional updates
+
+    Returns:
+        bool: True if save was successful
+    """
+    return get_settings_manager().save_settings(config, use_atomic)
 
 
 def load_settings() -> Config:
@@ -523,9 +649,17 @@ def load_settings() -> Config:
     return get_settings_manager().load_settings()
 
 
-def apply_settings(config: Config) -> None:
-    """Apply settings using global settings manager."""
-    get_settings_manager().apply_settings(config)
+def apply_settings(config: Config, use_atomic: bool = True) -> bool:
+    """Apply settings using global settings manager.
+
+    Args:
+        config: Configuration to apply
+        use_atomic: Whether to use atomic transactional updates
+
+    Returns:
+        bool: True if settings were applied successfully
+    """
+    return get_settings_manager().apply_settings(config, use_atomic)
 
 
 __all__ = [

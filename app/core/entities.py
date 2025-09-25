@@ -11,6 +11,7 @@ class Detection:
     score: float
     bbox: BBox
     angle: Optional[float] = None
+    class_name: Optional[str] = None  # Human-readable class name
 
 @dataclass(slots=True)
 class MasterObject:
@@ -36,3 +37,24 @@ class PipelineState:
     feedback: List[str]
     latency_ms: int
     fps: float
+
+@dataclass(slots=True)
+class ChatbotContext:
+    """Context information for chatbot integration."""
+    user_message: str
+    timestamp: str
+    frame_dimensions: Tuple[int, int]  # (width, height)
+    detection_results: List[Detection]
+    comparison_summary: Optional[str] = None
+    scene_description: Optional[str] = None
+
+@dataclass(slots=True)
+class ComparisonMetrics:
+    """Metrics for image comparison analysis."""
+    similarity_score: float  # 0.0 to 1.0
+    objects_added: int
+    objects_removed: int
+    objects_moved: int
+    objects_unchanged: int
+    total_changes: int
+    change_significance: str  # 'minor', 'moderate', 'major'

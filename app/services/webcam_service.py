@@ -6,11 +6,15 @@ import os
 import threading
 import time
 import numpy as np
+import logging
 from typing import List, Tuple, Optional
 from collections import deque
 
 from ..core.exceptions import WebcamError
 from ..core.performance import performance_timer, PerformanceMonitor
+
+# Initialize logger for this module
+logger = logging.getLogger(__name__)
 
 class WebcamService:
     """Enhanced webcam management service with performance optimizations."""
@@ -54,7 +58,9 @@ class WebcamService:
                     else:
                         self.cap.release()
                         self.cap = None
-                except:
+                except (OSError, RuntimeError, Exception) as e:
+                    # Backend not available or camera access denied
+                    logger.debug(f"Failed to open camera with backend {backend}: {e}")
                     continue
             
             if not self.cap or not self.cap.isOpened():
@@ -171,25 +177,100 @@ class WebcamService:
         return self._current_fps
 
     def close(self) -> None:
-        """Close webcam connection."""
-        # Stop buffering thread first
+        """Close webcam connection with comprehensive resource cleanup.
+
+        Implements proper resource leak prevention with retry logic and
+        timeout handling to ensure all resources are properly released.
+        """
+        logger.info("Starting webcam service cleanup...")
+
+        # Stop buffering thread with retry logic
         self._buffering_active = False
         if self._buffer_thread and self._buffer_thread.is_alive():
-            self._buffer_thread.join(timeout=1.0)
-        
-        # Clear buffer
-        with self._buffer_lock:
-            self._frame_buffer.clear()
-        
-        # Close camera
+            logger.debug("Stopping buffering thread...")
+
+            # First attempt: normal join with timeout
+            self._buffer_thread.join(timeout=2.0)
+
+            if self._buffer_thread.is_alive():
+                logger.warning("Buffering thread did not stop gracefully, attempting forced cleanup...")
+
+                # Second attempt: longer timeout
+                self._buffer_thread.join(timeout=5.0)
+
+                if self._buffer_thread.is_alive():
+                    logger.error("Buffering thread failed to stop - this may indicate a resource leak")
+                    # Note: In Python, we cannot forcefully terminate threads,
+                    # but we can mark the thread as daemon and let the interpreter handle it
+                    self._buffer_thread.daemon = True
+                else:
+                    logger.debug("Buffering thread stopped successfully on second attempt")
+            else:
+                logger.debug("Buffering thread stopped successfully")
+
+        # Clear buffer with error handling
+        try:
+            with self._buffer_lock:
+                buffer_size = len(self._frame_buffer)
+                self._frame_buffer.clear()
+                logger.debug(f"Cleared {buffer_size} frames from buffer")
+        except Exception as e:
+            logger.error(f"Error clearing frame buffer: {e}")
+
+        # Close camera with multiple attempts and comprehensive error handling
         if self.cap:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
+            logger.debug("Releasing camera resources...")
+
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    # Check if camera is still accessible
+                    if hasattr(self.cap, 'isOpened') and callable(self.cap.isOpened):
+                        if self.cap.isOpened():
+                            logger.debug(f"Camera release attempt {attempt + 1}/{max_attempts}")
+                            self.cap.release()
+
+                            # Verify release was successful
+                            import time
+                            time.sleep(0.1)  # Brief pause for system to process
+
+                            if hasattr(self.cap, 'isOpened') and self.cap.isOpened():
+                                if attempt < max_attempts - 1:
+                                    logger.warning(f"Camera still open after release attempt {attempt + 1}, retrying...")
+                                    continue
+                                else:
+                                    logger.error("Failed to release camera after all attempts")
+                            else:
+                                logger.debug("Camera released successfully")
+                                break
+                        else:
+                            logger.debug("Camera was already closed")
+                            break
+                    else:
+                        # Fallback for older OpenCV versions or corrupted objects
+                        logger.debug("Using fallback camera release method")
+                        self.cap.release()
+                        break
+
+                except AttributeError as e:
+                    logger.warning(f"Camera object corrupted during release: {e}")
+                    break
+                except Exception as e:
+                    if attempt < max_attempts - 1:
+                        logger.warning(f"Camera release attempt {attempt + 1} failed: {e}, retrying...")
+                    else:
+                        logger.error(f"Failed to release camera after {max_attempts} attempts: {e}")
+
+        # Cleanup object references
         self.cap = None
         self.index = None
         self._is_opened = False
+
+        # Force garbage collection to help with resource cleanup
+        import gc
+        gc.collect()
+
+        logger.info("Webcam service cleanup completed")
 
     def is_opened(self) -> bool:
         """Check if webcam is currently opened."""

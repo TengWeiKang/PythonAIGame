@@ -295,20 +295,38 @@ class PerformanceMonitor:
     
     def start_monitoring(self):
         """Start performance monitoring thread."""
-        if self._monitoring_thread is None or not self._monitoring_thread.is_alive():
-            self._monitoring_active = True
-            self._monitoring_thread = threading.Thread(
-                target=self._monitoring_loop,
-                name="PerformanceMonitor",
-                daemon=True
-            )
-            self._monitoring_thread.start()
+        try:
+            if self._monitoring_thread is None or not self._monitoring_thread.is_alive():
+                self._monitoring_active = True
+                self._monitoring_thread = threading.Thread(
+                    target=self._monitoring_loop,
+                    name="PerformanceMonitor",
+                    daemon=True
+                )
+                self._monitoring_thread.start()
+                logger.debug("Performance monitoring thread started successfully")
+        except Exception as e:
+            logger.error(f"Failed to start performance monitoring: {e}")
+            self._monitoring_active = False
     
     def stop_monitoring(self):
         """Stop performance monitoring."""
-        self._monitoring_active = False
-        if self._monitoring_thread:
-            self._monitoring_thread.join(timeout=2.0)
+        try:
+            self._monitoring_active = False
+            if self._monitoring_thread and self._monitoring_thread.is_alive():
+                self._monitoring_thread.join(timeout=2.0)
+                logger.debug("Performance monitoring stopped successfully")
+        except Exception as e:
+            logger.error(f"Error stopping performance monitoring: {e}")
+
+    # Compatibility methods for different naming conventions
+    def start(self):
+        """Alias for start_monitoring() for backwards compatibility."""
+        return self.start_monitoring()
+
+    def stop(self):
+        """Alias for stop_monitoring() for backwards compatibility."""
+        return self.stop_monitoring()
     
     def _monitoring_loop(self):
         """Main monitoring loop."""

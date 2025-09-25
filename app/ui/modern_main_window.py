@@ -20,14 +20,29 @@ from ..services.detection_service import DetectionService
 from ..services.annotation_service import AnnotationService
 from ..services.training_service import TrainingService
 from ..services.object_training_service import ObjectTrainingService
+from ..services.image_analysis_service import ImageAnalysisService
+from ..services.integrated_analysis_service import IntegratedAnalysisService
+from ..services.reference_manager import ReferenceImageManager
+from ..services.yolo_workflow_orchestrator import YoloWorkflowOrchestrator, WorkflowConfig
 from ..core.entities import PipelineState
 from ..utils.file_utils import (
-    save_reference_image, 
-    load_reference_image, 
-    get_latest_reference_image, 
+    save_reference_image,
+    load_reference_image,
+    get_latest_reference_image,
     cleanup_old_reference_images,
     get_image_info
 )
+from ..utils.detection_formatter import format_detection_data, format_detection_summary_compact
+
+# Fallback to ASCII formatter for Windows compatibility
+try:
+    from ..utils.detection_formatter_ascii import (
+        format_detection_data_ascii,
+        format_detection_summary_compact_ascii
+    )
+    HAS_ASCII_FORMATTER = True
+except ImportError:
+    HAS_ASCII_FORMATTER = False
 from .components.status_bar import StatusBar
 from .components.object_selector import ObjectSelector
 from .dialogs.object_naming_dialog import ObjectNamingDialog
@@ -122,33 +137,58 @@ class ModernMainWindow:
             logging.error(f"Failed to initialize webcam service: {e}")
             self.webcam_service = None
         
-        # Initialize Gemini service with configuration
+        # Initialize Gemini service with enhanced configuration detection
         try:
+            # Check if we have environment configuration with API key
+            env_api_key = None
+            if hasattr(config, '_environment_config') and config._environment_config:
+                env_api_key = config._environment_config.gemini_api_key
+                if env_api_key:
+                    logging.info("Using Gemini API key from environment configuration")
+
+            # Use environment API key if available, otherwise fall back to config
+            effective_api_key = env_api_key or getattr(config, 'gemini_api_key', '')
+
             self.gemini_service = AsyncGeminiService(
-                api_key=getattr(config, 'gemini_api_key', ''),
+                api_key=effective_api_key,
                 model=getattr(config, 'gemini_model', 'gemini-1.5-flash'),
                 timeout=getattr(config, 'gemini_timeout', 30),
                 temperature=getattr(config, 'gemini_temperature', 0.7),
                 max_tokens=getattr(config, 'gemini_max_tokens', 2048),
                 persona=getattr(config, 'chatbot_persona', '')
             )
+
+            # Log configuration status for debugging
+            if hasattr(self.gemini_service, 'get_configuration_status'):
+                status = self.gemini_service.get_configuration_status()
+                logging.info(f"Gemini service configuration status: {status}")
+
         except Exception as e:
             logging.error(f"Failed to initialize Gemini service: {e}")
             self.gemini_service = None
-        
+
         # Register memory pressure callback if available
         if self.memory_manager:
             try:
                 self.memory_manager.register_memory_pressure_callback(self._on_memory_pressure)
             except Exception as e:
                 logging.error(f"Failed to register memory pressure callback: {e}")
-        
-        # Start chat session if API key is configured and service is available
+
+        # Enhanced chat session initialization with better detection
         self._gemini_configured = False
-        if self.gemini_service and getattr(config, 'gemini_api_key', ''):
+        if self.gemini_service:
             try:
-                self.gemini_service.start_chat_session(getattr(config, 'chatbot_persona', ''))
-                self._gemini_configured = True
+                # Use the service's own configuration check rather than config attribute
+                if self.gemini_service.is_configured():
+                    self.gemini_service.start_chat_session(getattr(config, 'chatbot_persona', ''))
+                    self._gemini_configured = True
+                    logging.info("Gemini chat session started successfully")
+                else:
+                    logging.warning("Gemini service not properly configured - chat session not started")
+                    # Get detailed status for debugging
+                    if hasattr(self.gemini_service, 'get_configuration_status'):
+                        status = self.gemini_service.get_configuration_status()
+                        logging.debug(f"Gemini configuration details: {status}")
             except Exception as e:
                 logging.error(f"Failed to start Gemini chat session: {e}")
                 self._gemini_configured = False
@@ -175,6 +215,102 @@ class ModernMainWindow:
         except Exception as e:
             logging.error(f"Failed to initialize object training service: {e}")
             self.object_training_service = None
+
+        try:
+            # ImageAnalysisService requires InferenceService, so initialize it after inference_service is ready
+            if self.inference_service:
+                self.image_analysis_service = ImageAnalysisService(self.inference_service, config)
+            else:
+                logging.warning("InferenceService not available, ImageAnalysisService will not be initialized")
+                self.image_analysis_service = None
+        except Exception as e:
+            logging.error(f"Failed to initialize image analysis service: {e}")
+            self.image_analysis_service = None
+
+        # Initialize IntegratedAnalysisService for comprehensive YOLO+Chatbot integration
+        self.reference_manager = None
+        self.workflow_orchestrator = None
+
+        try:
+            if self.gemini_service and hasattr(config, 'model_size'):
+                # Initialize YOLO backend
+                from ..backends.yolo_backend import YoloBackend
+
+                yolo_config = {
+                    'model_size': getattr(config, 'model_size', 'yolo12n'),
+                    'confidence_threshold': getattr(config, 'confidence_threshold', 0.5),
+                    'device': getattr(config, 'device', 'auto')
+                }
+
+                self.yolo_backend = YoloBackend(yolo_config)
+
+                # Load the YOLO model
+                model_name = yolo_config['model_size']
+                if self.yolo_backend.load_model(model_name):
+                    # Initialize Reference Image Manager
+                    try:
+                        reference_data_dir = os.path.join(self.config.data_dir, 'references')
+                        os.makedirs(reference_data_dir, exist_ok=True)
+
+                        self.reference_manager = ReferenceImageManager(
+                            yolo_backend=self.yolo_backend,
+                            data_dir=reference_data_dir,
+                            max_references=getattr(config, 'max_references', 100),
+                            max_memory_mb=getattr(config, 'reference_max_memory_mb', 50),
+                            enable_compression=getattr(config, 'reference_compression', True)
+                        )
+                        logging.info("ReferenceImageManager initialized successfully")
+                    except Exception as e:
+                        logging.error(f"Failed to initialize ReferenceImageManager: {e}")
+                        self.reference_manager = None
+
+                    # Initialize IntegratedAnalysisService
+                    integration_config = {
+                        'enable_image_comparison': getattr(config, 'enable_image_comparison', True),
+                        'enable_scene_analysis': getattr(config, 'enable_scene_analysis', True),
+                        'chatbot_persona': getattr(config, 'chatbot_persona', ''),
+                        'response_format': getattr(config, 'response_format', 'Detailed')
+                    }
+
+                    self.integrated_analysis_service = IntegratedAnalysisService(
+                        yolo_backend=self.yolo_backend,
+                        gemini_service=self.gemini_service,
+                        config=integration_config
+                    )
+                    logging.info("IntegratedAnalysisService initialized successfully")
+
+                    # Initialize Workflow Orchestrator
+                    workflow_config = WorkflowConfig(
+                        auto_yolo_analysis=getattr(config, 'auto_yolo_analysis', True),
+                        reference_comparison_enabled=getattr(config, 'reference_comparison_enabled', True),
+                        min_detection_confidence=getattr(config, 'min_detection_confidence', 0.5),
+                        max_objects_to_analyze=getattr(config, 'max_objects_to_analyze', 10),
+                        async_timeout_seconds=getattr(config, 'workflow_async_timeout', 5.0),
+                        enable_performance_monitoring=getattr(config, 'workflow_performance_monitoring', True),
+                        cache_analysis_results=getattr(config, 'cache_analysis_results', True)
+                    )
+
+                    self.workflow_orchestrator = YoloWorkflowOrchestrator(
+                        yolo_backend=self.yolo_backend,
+                        reference_manager=self.reference_manager,
+                        gemini_service=self.gemini_service,
+                        integrated_service=self.integrated_analysis_service,
+                        config=workflow_config
+                    )
+                    logging.info("YoloWorkflowOrchestrator initialized successfully")
+                else:
+                    logging.warning("Failed to load YOLO model, IntegratedAnalysisService not available")
+                    self.integrated_analysis_service = None
+                    self.yolo_backend = None
+            else:
+                logging.warning("Gemini service or model configuration not available, IntegratedAnalysisService not initialized")
+                self.integrated_analysis_service = None
+                self.yolo_backend = None
+        except Exception as e:
+            logging.error(f"Failed to initialize integrated analysis service: {e}")
+            self.integrated_analysis_service = None
+            self.yolo_backend = None
+            self.workflow_orchestrator = None
         
         # Initialize state variables
         self._current_frame = None
@@ -903,6 +1039,9 @@ class ModernMainWindow:
         
         self._objects_listbox.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
+
+        # Add mouse wheel support for objects listbox
+        self._objects_listbox.bind('<MouseWheel>', self._on_objects_listbox_mousewheel)
         
         # Management buttons
         buttons_frame = tk.Frame(list_frame, bg=self.COLORS['bg_secondary'], height=40)
@@ -1067,8 +1206,12 @@ class ModernMainWindow:
         input_field_frame = tk.Frame(input_container, bg=self.COLORS['bg_tertiary'])
         input_field_frame.pack(fill='x')
         
+        # Frame for text input and scrollbar
+        text_input_frame = tk.Frame(input_field_frame, bg=self.COLORS['bg_tertiary'])
+        text_input_frame.pack(side='left', fill='both', expand=True)
+
         self._chat_input = tk.Text(
-            input_field_frame,
+            text_input_frame,
             height=5,
             bg=self.COLORS['bg_tertiary'],
             fg=self.COLORS['text_primary'],
@@ -1079,10 +1222,26 @@ class ModernMainWindow:
             padx=10,
             pady=8
         )
+
+        # Add scrollbar for chat input
+        self._chat_input_scrollbar = ttk.Scrollbar(
+            text_input_frame,
+            orient='vertical',
+            command=self._chat_input.yview
+        )
+        self._chat_input.configure(yscrollcommand=self._chat_input_scrollbar.set)
+
+        # Pack text input and scrollbar
         self._chat_input.pack(side='left', fill='both', expand=True)
+        self._chat_input_scrollbar.pack(side='right', fill='y')
+
+        # Bind events for chat input
         self._chat_input.bind('<Return>', self._on_chat_send_enhanced)
         self._chat_input.bind('<Shift-Return>', self._on_chat_newline)
         self._chat_input.bind('<KeyRelease>', self._on_chat_typing)
+
+        # Add mouse wheel support for chat input
+        self._chat_input.bind('<MouseWheel>', self._on_chat_input_mousewheel)
         
         # Enhanced send button
         send_frame = tk.Frame(input_field_frame, bg=self.COLORS['bg_tertiary'])
@@ -1155,8 +1314,8 @@ class ModernMainWindow:
     def _on_start_stream(self):
         """Start the webcam stream."""
         try:
-            if not self.webcam_service.is_opened():
-                success = self.webcam_service.open(
+            if not self.webcam_service or not self.webcam_service.is_opened():
+                success = self.webcam_service and self.webcam_service.open(
                     self.config.last_webcam_index,
                     self.config.camera_width,
                     self.config.camera_height,
@@ -1189,8 +1348,9 @@ class ModernMainWindow:
             if self._stream_thread and self._stream_thread.is_alive():
                 self._stream_thread.join(timeout=1.0)
             
-            self.webcam_service.close()
-            
+            if self.webcam_service:
+                self.webcam_service.close()
+
             self.start_button.configure(state='normal')
             self.stop_button.configure(state='disabled')
             self.capture_button.configure(state='disabled')
@@ -1221,7 +1381,10 @@ class ModernMainWindow:
         
         while self._is_streaming:
             try:
-                ret, frame = self.webcam_service.read()
+                if self.webcam_service:
+                    ret, frame = self.webcam_service.read()
+                else:
+                    ret, frame = False, None
                 if ret and frame is not None:
                     self._current_frame = frame.copy()
                     
@@ -1370,19 +1533,22 @@ class ModernMainWindow:
                 if image is not None:
                     self._reference_image = image
                     self._display_image_on_canvas(self._reference_canvas, image)
-                    
+
+                    # Set reference image in IntegratedAnalysisService for YOLO comparison
+                    self._set_reference_in_integrated_service(self._reference_image)
+
                     # Auto-save reference image for persistence
                     saved_path = self._save_reference_image_persistent(image, "file")
                     if saved_path:
                         # Update config with saved path
                         self.config.reference_image_path = saved_path
                         self._save_config_async()
-                    
+
                     self.ref_info_label.configure(
                         text=f"Loaded: {os.path.basename(file_path)}"
                     )
                     self._update_status("Reference image loaded and saved")
-                    
+
                     # Show user feedback about auto-save
                     self.root.after(2000, lambda: self._show_reference_auto_save_feedback("loaded"))
                 else:
@@ -1395,19 +1561,22 @@ class ModernMainWindow:
         if self._current_frame is not None:
             self._reference_image = self._current_frame.copy()
             self._display_image_on_canvas(self._reference_canvas, self._reference_image)
-            
+
+            # Set reference image in IntegratedAnalysisService for YOLO comparison
+            self._set_reference_in_integrated_service(self._reference_image)
+
             # Auto-save reference image for persistence
             saved_path = self._save_reference_image_persistent(self._reference_image, "camera")
             if saved_path:
                 # Update config with saved path
                 self.config.reference_image_path = saved_path
                 self._save_config_async()
-            
+
             self.ref_info_label.configure(
                 text=f"From stream: {datetime.now().strftime('%H:%M:%S')}"
             )
             self._update_status("Reference set from stream and saved")
-            
+
             # Show user feedback about auto-save
             self.root.after(2000, lambda: self._show_reference_auto_save_feedback("captured"))
         else:
@@ -1912,7 +2081,7 @@ class ModernMainWindow:
     
     def _analyze_current_image(self):
         """Analyze current captured image using Gemini."""
-        if not self.gemini_service.is_configured():
+        if not self.gemini_service or not self.gemini_service.is_configured():
             messagebox.showwarning("Warning", "Gemini API key not configured. Please check settings.")
             return
         
@@ -1931,11 +2100,14 @@ class ModernMainWindow:
                 self.root.after(0, lambda: self._add_chat_message("AI", result))
                 self.root.after(0, lambda: self._update_status("Analysis complete"))
         
-        self.gemini_service.analyze_single_image_async(self._captured_image, on_result)
+        if self.gemini_service:
+            self.gemini_service.analyze_single_image_async(self._captured_image, on_result)
+        else:
+            messagebox.showerror("Error", "Gemini service not available")
     
     def _compare_images(self):
         """Compare reference and current images using Gemini."""
-        if not self.gemini_service.is_configured():
+        if not self.gemini_service or not self.gemini_service.is_configured():
             messagebox.showwarning("Warning", "Gemini API key not configured. Please check settings.")
             return
         
@@ -1958,11 +2130,14 @@ class ModernMainWindow:
                 self.root.after(0, lambda: self._add_chat_message("AI", result))
                 self.root.after(0, lambda: self._update_status("Comparison complete"))
         
-        self.gemini_service.compare_images_async(
-            self._reference_image, 
-            self._captured_image, 
-            on_result
-        )
+        if self.gemini_service:
+            self.gemini_service.compare_images_async(
+                self._reference_image,
+                self._captured_image,
+                on_result
+            )
+        else:
+            messagebox.showerror("Error", "Gemini service not available")
     
     
     def _on_chat_send(self, event=None):
@@ -2242,7 +2417,15 @@ class ModernMainWindow:
     def _on_chat_mousewheel(self, event):
         """Handle mouse wheel scrolling in chat."""
         self._chat_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-    
+
+    def _on_chat_input_mousewheel(self, event):
+        """Handle mouse wheel scrolling in chat input text area."""
+        self._chat_input.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_objects_listbox_mousewheel(self, event):
+        """Handle mouse wheel scrolling in objects listbox."""
+        self._objects_listbox.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
     def _animate_message_appearance(self, message_widget):
         """Animate message appearance with fade-in effect."""
         # Simple fade-in animation by adjusting alpha
@@ -2309,19 +2492,217 @@ class ModernMainWindow:
                 # Update visual indicator if needed
                 break
     
+    def _validate_stream_for_analysis(self) -> tuple[bool, Optional[str]]:
+        """
+        Validate that the video stream is active and ready for automatic YOLO analysis.
+
+        Returns:
+            tuple: (is_valid, error_message)
+        """
+        try:
+            # Check if streaming is active
+            if not hasattr(self, '_is_streaming') or not self._is_streaming:
+                return False, "Video stream is not active. Please start the webcam to enable automatic analysis."
+
+            # Check if webcam service is available and properly initialized
+            if not hasattr(self, 'webcam_service') or not self.webcam_service:
+                return False, "Webcam service is not available or not initialized."
+
+            # Check if webcam is opened and functioning
+            try:
+                if not self.webcam_service.is_opened():
+                    return False, "Webcam is not connected or opened. Please check camera connection."
+            except Exception as e:
+                return False, f"Webcam service error: {str(e)}"
+
+            # Check if current frame is available and valid
+            if not hasattr(self, '_current_frame') or self._current_frame is None:
+                return False, "No current frame available. Please ensure the webcam is working properly."
+
+            # Check frame validity and dimensions
+            try:
+                if self._current_frame.size == 0:
+                    return False, "Current frame is empty or corrupted."
+
+                # Check minimum frame dimensions (reasonable for analysis)
+                height, width = self._current_frame.shape[:2]
+                if height < 100 or width < 100:
+                    return False, f"Frame too small for analysis ({width}x{height}). Minimum 100x100 required."
+
+            except Exception as e:
+                return False, f"Frame validation error: {str(e)}"
+
+            # Check if integrated analysis service is available and properly configured
+            if not hasattr(self, 'integrated_analysis_service') or self.integrated_analysis_service is None:
+                return False, "YOLO analysis service is not available or not initialized."
+
+            # Validate YOLO backend is loaded and ready
+            if not hasattr(self, 'yolo_backend') or self.yolo_backend is None:
+                return False, "YOLO backend is not available."
+
+            try:
+                if not hasattr(self.yolo_backend, 'is_loaded') or not self.yolo_backend.is_loaded:
+                    return False, "YOLO model is not loaded. Please ensure model is properly initialized."
+            except Exception as e:
+                return False, f"YOLO backend validation error: {str(e)}"
+
+            # Check Gemini service is configured for the integrated analysis
+            if not hasattr(self, 'gemini_service') or not self.gemini_service:
+                return False, "Gemini service is not available for AI analysis."
+
+            try:
+                if not self.gemini_service.is_configured():
+                    return False, "Gemini service is not properly configured. Please check API key in settings."
+            except Exception as e:
+                return False, f"Gemini service validation error: {str(e)}"
+
+            # All validations passed
+            return True, None
+
+        except Exception as e:
+            # Catch any unexpected errors in validation
+            import traceback
+            logging.error(f"Stream validation failed with unexpected error: {e}")
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            return False, f"Validation error: {str(e)}"
+
+    def _set_reference_in_integrated_service(self, reference_image: np.ndarray) -> bool:
+        """
+        Helper method to set reference image in IntegratedAnalysisService and ReferenceManager.
+
+        Args:
+            reference_image: Reference image to set
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        success = False
+
+        # Set in reference manager first if available
+        if hasattr(self, 'reference_manager') and self.reference_manager:
+            try:
+                # Capture reference with current configuration
+                reference_id = self.reference_manager.capture_reference(
+                    reference_image,
+                    confidence_threshold=self.config.min_detection_confidence
+                )
+                if reference_id:
+                    logging.info(f"Reference image captured successfully in ReferenceManager: {reference_id}")
+                    success = True
+                else:
+                    logging.warning("Failed to capture reference image in ReferenceManager")
+            except Exception as e:
+                logging.error(f"Error capturing reference in ReferenceManager: {e}")
+
+        # Also set in integrated service for backward compatibility
+        if hasattr(self, 'integrated_analysis_service') and self.integrated_analysis_service:
+            try:
+                service_success = self.integrated_analysis_service.set_reference_image(reference_image)
+                if service_success:
+                    logging.info("Reference image set successfully in IntegratedAnalysisService")
+                    success = True
+                else:
+                    logging.warning("Failed to set reference image in IntegratedAnalysisService")
+            except Exception as e:
+                logging.error(f"Error setting reference image in IntegratedAnalysisService: {e}")
+
+        return success
+
+    def _fallback_to_basic_analysis(self, message: str, current_frame: Optional[np.ndarray], chat_callback):
+        """
+        Fallback method for basic analysis when automatic YOLO inference is not available.
+
+        Args:
+            message: User's original message
+            current_frame: Current video frame (if available)
+            chat_callback: Callback function to handle the response
+        """
+        try:
+            enhanced_message = message
+
+            # Try basic image analysis if available
+            if (current_frame is not None and
+                hasattr(self, 'image_analysis_service') and
+                self.image_analysis_service is not None):
+                try:
+                    logging.info("Attempting basic image analysis fallback")
+                    analysis_result = self.image_analysis_service.analyze_frame_comprehensive(
+                        current_frame, message
+                    )
+
+                    if analysis_result:
+                        enhanced_message = self.image_analysis_service.format_for_chatbot(
+                            analysis_result, message
+                        )
+                        logging.info(f"Basic image analysis successful: {len(enhanced_message)} characters")
+                    else:
+                        logging.warning("Basic image analysis returned no results")
+
+                except Exception as e:
+                    logging.error(f"Basic image analysis failed: {e}")
+                    # Continue with original message
+
+            # Send to Gemini (with or without basic analysis enhancement)
+            if hasattr(self, 'gemini_service') and self.gemini_service:
+                # Include image if available
+                if current_frame is not None:
+                    try:
+                        import cv2
+                        _, image_bytes = cv2.imencode('.jpg', current_frame)
+                        image_data = image_bytes.tobytes()
+                        result = self.gemini_service.send_message(enhanced_message, image_data)
+                    except Exception as e:
+                        logging.warning(f"Failed to encode image for Gemini: {e}")
+                        result = self.gemini_service.send_message(enhanced_message)
+                else:
+                    result = self.gemini_service.send_message(enhanced_message)
+
+                chat_callback(result, None)
+            else:
+                chat_callback(None, "Gemini service not available")
+
+        except Exception as e:
+            logging.error(f"Fallback analysis failed: {e}")
+            chat_callback(None, f"Analysis failed: {str(e)}")
+
     def _process_chat_message(self, message: str):
-        """Process chat message with enhanced handling."""
-        # Check if Gemini service is configured
+        """Process chat message with enhanced handling and diagnostics."""
+        # Enhanced service availability check with detailed diagnostics
+        if not self.gemini_service:
+            self._add_chat_message("System",
+                "Chatbot service not initialized. Please restart the application.")
+            return
+
         if not self.gemini_service.is_configured():
-            self._add_chat_message("System", 
-                "Gemini API not configured. Please go to Settings > Chatbot to set up your API key.")
+            # Get detailed configuration status for better error messages
+            if hasattr(self.gemini_service, 'get_configuration_status'):
+                try:
+                    status = self.gemini_service.get_configuration_status()
+                    if status.get('errors'):
+                        error_msg = f"Chatbot configuration issue: {'; '.join(status['errors'])}"
+                    elif not status.get('has_api_key'):
+                        error_msg = "No API key found. Please set GEMINI_API_KEY environment variable or configure in Settings."
+                    elif not status.get('sdk_available'):
+                        error_msg = "Google Generative AI SDK not available. Please install: pip install google-generativeai"
+                    elif not status.get('api_key_valid_format'):
+                        error_msg = "API key format is invalid. Please check your Gemini API key."
+                    elif not status.get('has_model'):
+                        error_msg = "AI model not initialized. Check your API key and internet connection."
+                    else:
+                        error_msg = "Chatbot not configured. Please check Settings > Chatbot."
+
+                    logging.debug(f"Chatbot configuration status: {status}")
+                except Exception as e:
+                    logging.error(f"Failed to get configuration status: {e}")
+                    error_msg = "Chatbot configuration check failed. Please check Settings > Chatbot."
+            else:
+                error_msg = "Chatbot not configured. Please check Settings > Chatbot to set up your API key."
+
+            self._add_chat_message("System", error_msg)
             return
         
-        # Handle special commands
-        if message.lower().strip() == "help":
-            self._add_chat_message("System", self._get_help_text())
-            return
-        elif message.lower().strip() == "analyze current":
+        # Handle special commands (help command removed - now acts as normal chat)
+        if message.lower().strip() == "analyze current":
             self._analyze_current_image()
             return
         elif message.lower().strip() == "compare":
@@ -2340,15 +2721,126 @@ class ModernMainWindow:
             else:
                 self.root.after(0, lambda: self._add_chat_message("AI", result))
         
-        # Send message in background thread
+        # Send message in background thread with automatic YOLO inference
         try:
             def send_message():
                 try:
-                    result = self.gemini_service.send_message(message)
-                    chat_callback(result, None)
+                    if not self.gemini_service:
+                        chat_callback(None, "Gemini service not available")
+                        return
+
+                    # AUTOMATIC YOLO INFERENCE - Use new workflow orchestrator
+                    stream_valid, validation_error = self._validate_stream_for_analysis()
+
+                    # Try workflow orchestrator first if available
+                    if stream_valid and hasattr(self, 'workflow_orchestrator') and self.workflow_orchestrator:
+                        try:
+                            logging.info(f"Starting orchestrated YOLO workflow for message: '{message[:50]}...'")
+
+                            # Capture current frame for analysis
+                            current_frame = self._current_frame.copy()
+
+                            # Run orchestrated workflow asynchronously in this thread
+                            import asyncio
+
+                            # Create event loop for async operation
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+
+                            try:
+                                # Run the orchestrated workflow
+                                workflow_result = loop.run_until_complete(
+                                    self.workflow_orchestrator.orchestrate_analysis(
+                                        current_frame, message, self._reference_image
+                                    )
+                                )
+
+                                if workflow_result and workflow_result.success:
+                                    # Success! Use formatted data and AI response
+                                    logging.info(f"Orchestrated workflow completed in {workflow_result.workflow_time_ms:.1f}ms")
+
+                                    # Combine detection data with AI response
+                                    if workflow_result.formatted_data and workflow_result.ai_response:
+                                        enhanced_response = f"{workflow_result.formatted_data}\n\n{workflow_result.ai_response}"
+                                    elif workflow_result.ai_response:
+                                        enhanced_response = workflow_result.ai_response
+                                    else:
+                                        enhanced_response = workflow_result.formatted_data or "Analysis completed"
+
+                                    chat_callback(enhanced_response, None)
+                                    return
+                                else:
+                                    # Log the error but continue to fallback
+                                    error_msg = workflow_result.error_message if workflow_result else "Unknown workflow error"
+                                    logging.warning(f"Orchestrated workflow failed: {error_msg}")
+
+                            finally:
+                                loop.close()
+
+                        except Exception as e:
+                            logging.error(f"Orchestrated workflow failed: {e}")
+                            # Continue to fallback
+
+                    # Fallback to integrated analysis service if orchestrator not available
+                    elif stream_valid and hasattr(self, 'integrated_analysis_service') and self.integrated_analysis_service:
+                        # FALLBACK: INTEGRATED ANALYSIS SERVICE
+                        try:
+                            logging.info(f"Falling back to integrated analysis for message: '{message[:50]}...'")
+
+                            # Capture current frame for analysis
+                            current_frame = self._current_frame.copy()
+
+                            # Run integrated YOLO+Gemini analysis synchronously in this thread
+                            import asyncio
+
+                            # Create event loop for async operation
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+
+                            try:
+                                # Run the integrated analysis (YOLO data will be hidden in the prompt)
+                                analysis_result = loop.run_until_complete(
+                                    self.integrated_analysis_service.analyze_with_chatbot(
+                                        current_frame, message
+                                    )
+                                )
+
+                                if analysis_result and analysis_result.success:
+                                    # Success! Create enhanced response with visible YOLO detection data
+                                    logging.info(f"Integrated analysis completed successfully in {analysis_result.analysis_duration_ms:.1f}ms")
+
+                                    # Extract detection data for formatting
+                                    enhanced_response = self._create_enhanced_chat_response(
+                                        analysis_result, current_frame.shape[:2][::-1]  # (width, height)
+                                    )
+
+                                    chat_callback(enhanced_response, None)
+                                    return
+                                else:
+                                    # Log the error but continue to fallback
+                                    error_msg = analysis_result.error_message if analysis_result else "Unknown analysis error"
+                                    logging.warning(f"Automatic YOLO analysis failed: {error_msg}")
+
+                            finally:
+                                loop.close()
+
+                        except Exception as e:
+                            logging.error(f"Automatic YOLO inference failed: {e}")
+                            # Continue to fallback
+                    else:
+                        # Log why automatic YOLO is not available
+                        if validation_error:
+                            logging.info(f"Automatic YOLO analysis not available: {validation_error}")
+                        else:
+                            logging.info("Integrated analysis service not available")
+
+                    # FALLBACK: Basic analysis or simple chat (when YOLO fails or unavailable)
+                    self._fallback_to_basic_analysis(message, self._current_frame, chat_callback)
+
                 except Exception as e:
+                    logging.error(f"Chat message processing failed: {e}")
                     chat_callback(None, str(e))
-            
+
             threading.Thread(target=send_message, daemon=True).start()
         except Exception as e:
             self._add_chat_message("System", f"Error sending message: {e}", "error")
@@ -2437,8 +2929,7 @@ class ModernMainWindow:
         return """Available commands and features:
 
 🔍 **analyze current** - Analyze the current captured image
-📊 **compare** - Compare reference and current images  
-💡 **help** - Show this help message
+📊 **compare** - Compare reference and current images
 
 **Interactive Features:**
 • Right-click on any message to copy or rate it
@@ -2451,8 +2942,121 @@ class ModernMainWindow:
 • Use clear, specific questions for better AI responses
 • The AI can analyze images, compare them, and answer questions
 • Internet connection required for AI features"""
-    
-    
+
+    def _create_enhanced_chat_response(self, analysis_result, frame_dimensions: tuple) -> str:
+        """
+        Create enhanced chat response with visible YOLO detection data.
+
+        Args:
+            analysis_result: IntegratedAnalysisResult from the analysis service
+            frame_dimensions: Tuple of (width, height) for the frame
+
+        Returns:
+            Enhanced response string with detection data and AI response
+        """
+        try:
+            response_parts = []
+
+            # Extract detection data from analysis result
+            detections = []
+            yolo_comparison = analysis_result.yolo_comparison
+            image_analysis = analysis_result.image_analysis
+
+            # Try multiple sources for detection data (prioritized)
+            # 1. From YOLO comparison current objects
+            if yolo_comparison and yolo_comparison.object_comparisons:
+                for comp in yolo_comparison.object_comparisons:
+                    if comp.current_object:
+                        detections.append(comp.current_object)
+
+            # 2. From image analysis objects
+            if not detections and image_analysis and image_analysis.objects:
+                detections = image_analysis.objects
+
+            # 3. Fallback: Run direct YOLO detection on current frame if no detections found
+            if not detections and hasattr(self, 'integrated_analysis_service') and self.integrated_analysis_service:
+                try:
+                    # Get current frame and run YOLO directly
+                    if hasattr(self, '_current_frame') and self._current_frame is not None:
+                        yolo_backend = self.integrated_analysis_service.yolo_backend
+                        if yolo_backend and yolo_backend.is_loaded:
+                            detections = yolo_backend.predict(
+                                self._current_frame,
+                                conf=0.5,
+                                iou=0.45,
+                                verbose=False
+                            )
+                            logging.debug(f"Direct YOLO detection fallback found {len(detections)} objects")
+                except Exception as e:
+                    logging.warning(f"Direct YOLO detection fallback failed: {e}")
+
+            # Enhance detections with class names if not already present
+            if detections and hasattr(self, 'integrated_analysis_service') and self.integrated_analysis_service:
+                try:
+                    yolo_backend = self.integrated_analysis_service.yolo_backend
+                    if yolo_backend and yolo_backend.is_loaded and hasattr(yolo_backend.model, 'names'):
+                        class_names = yolo_backend.model.names
+                        for detection in detections:
+                            if not detection.class_name and detection.class_id in class_names:
+                                detection.class_name = class_names[detection.class_id]
+                except Exception as e:
+                    logging.warning(f"Failed to add class names to detections: {e}")
+
+            # Format detection data if available
+            if detections:
+                try:
+                    # Try the full unicode formatter first
+                    detection_data = format_detection_data(
+                        detections=detections,
+                        frame_dimensions=frame_dimensions,
+                        yolo_comparison=yolo_comparison,
+                        image_analysis=image_analysis,
+                        include_coordinates=True,
+                        include_angles=True,
+                        include_confidence=True,
+                        include_size_info=True
+                    )
+                except (UnicodeEncodeError, UnicodeError) as e:
+                    # Fallback to ASCII formatter for Windows compatibility
+                    logging.warning(f"Unicode formatter failed, using ASCII fallback: {e}")
+                    if HAS_ASCII_FORMATTER:
+                        detection_data = format_detection_data_ascii(
+                            detections=detections,
+                            frame_dimensions=frame_dimensions,
+                            yolo_comparison=yolo_comparison,
+                            image_analysis=image_analysis,
+                            include_coordinates=True,
+                            include_angles=True,
+                            include_confidence=True,
+                            include_size_info=True
+                        )
+                    else:
+                        detection_data = f"Detection data: {len(detections)} objects found"
+                except Exception as e:
+                    # General fallback
+                    logging.error(f"Detection formatting failed: {e}")
+                    detection_data = f"Detection data formatting error: {len(detections)} objects detected"
+
+                response_parts.append(detection_data)
+                response_parts.append("")  # Add spacing
+
+            # Add the AI response
+            if analysis_result.chatbot_response:
+                response_parts.append("AI ANALYSIS:")
+                response_parts.append(analysis_result.chatbot_response)
+
+            # Add performance info if verbose mode is enabled
+            if hasattr(self, 'config') and self.config and self.config.get('ui_verbose_mode', False):
+                response_parts.append("")
+                response_parts.append(f"Analysis Time: {analysis_result.analysis_duration_ms:.1f}ms")
+
+            return "\n".join(response_parts)
+
+        except Exception as e:
+            logging.error(f"Failed to create enhanced chat response: {e}")
+            # Fallback to original response
+            return analysis_result.chatbot_response if analysis_result.chatbot_response else "Analysis completed but response formatting failed."
+
     def _open_settings(self):
         """Open the comprehensive settings dialog."""
         if self._settings_dialog is None or not self._settings_dialog.winfo_exists():
@@ -2465,7 +3069,10 @@ class ModernMainWindow:
                 'inference_service': self.inference_service,
                 'annotation_service': self.annotation_service,
                 'training_service': self.training_service,
-                'object_training_service': self.object_training_service
+                'object_training_service': self.object_training_service,
+                'image_analysis_service': self.image_analysis_service,
+                'integrated_analysis_service': getattr(self, 'integrated_analysis_service', None),
+                'yolo_backend': getattr(self, 'yolo_backend', None)
             }
             
             self._settings_dialog = ComprehensiveSettingsDialog(
@@ -2523,14 +3130,15 @@ Tips:
                     'enable_rate_limiting': getattr(self.config, 'enable_rate_limiting', True),
                     'requests_per_minute': getattr(self.config, 'requests_per_minute', 15)
                 }
-                self.gemini_service.update_configuration(**gemini_config)
-                
-                # Restart chat session with new configuration if API key is available
-                if getattr(self.config, 'gemini_api_key', ''):
-                    try:
-                        self.gemini_service.start_chat_session(getattr(self.config, 'chatbot_persona', ''))
-                    except Exception as e:
-                        print(f"Failed to restart chat session: {e}")
+                if self.gemini_service:
+                    self.gemini_service.update_configuration(**gemini_config)
+
+                    # Restart chat session with new configuration if API key is available
+                    if getattr(self.config, 'gemini_api_key', ''):
+                        try:
+                            self.gemini_service.start_chat_session(getattr(self.config, 'chatbot_persona', ''))
+                        except Exception as e:
+                            print(f"Failed to restart chat session: {e}")
             
             # Update webcam service if streaming (restart stream with new settings)
             if hasattr(self, 'webcam_service') and self._is_streaming:
@@ -2571,13 +3179,16 @@ Tips:
                 if saved_image is not None:
                     self._reference_image = saved_image
                     self._display_image_on_canvas(self._reference_canvas, saved_image)
-                    
+
+                    # Set reference image in IntegratedAnalysisService for YOLO comparison
+                    self._set_reference_in_integrated_service(self._reference_image)
+
                     filename = os.path.basename(self.config.reference_image_path)
                     self.ref_info_label.configure(
                         text=f"Auto-loaded: {filename}"
                     )
                     self._update_status("Previous reference image restored")
-                    
+
                     # Show user feedback
                     self.root.after(1000, lambda: self._show_reference_auto_save_feedback("restored"))
                     return
@@ -2589,20 +3200,23 @@ Tips:
                 if saved_image is not None:
                     self._reference_image = saved_image
                     self._display_image_on_canvas(self._reference_canvas, saved_image)
-                    
+
+                    # Set reference image in IntegratedAnalysisService for YOLO comparison
+                    self._set_reference_in_integrated_service(self._reference_image)
+
                     # Update config with found path
                     self.config.reference_image_path = latest_path
                     self._save_config_async()
-                    
+
                     filename = os.path.basename(latest_path)
                     self.ref_info_label.configure(
                         text=f"Auto-loaded: {filename}"
                     )
                     self._update_status("Latest reference image restored")
-                    
+
                     # Show user feedback
                     self.root.after(1000, lambda: self._show_reference_auto_save_feedback("restored"))
-                    
+
                     # Clean up old reference images
                     self.root.after(3000, lambda: cleanup_old_reference_images(self.config.data_dir))
                     
@@ -2721,7 +3335,7 @@ Tips:
                     
                     # Update FPS from webcam service
                     if hasattr(self.webcam_service, 'get_current_fps'):
-                        actual_fps = self.webcam_service.get_current_fps()
+                        actual_fps = self.webcam_service.get_current_fps() if self.webcam_service else 0
                         self.root.after(0, lambda: self._update_fps_display(actual_fps))
                 
                 # Sleep for monitoring interval
@@ -2767,9 +3381,9 @@ Tips:
             self._is_streaming = False
             
             # Close services
-            if hasattr(self, 'webcam_service'):
+            if hasattr(self, 'webcam_service') and self.webcam_service:
                 self.webcam_service.close()
-            if hasattr(self, 'gemini_service'):
+            if hasattr(self, 'gemini_service') and self.gemini_service:
                 self.gemini_service.cleanup_threads()
             
             # Stop optimized canvases
@@ -2831,12 +3445,61 @@ Cache Hit Rates:
     def _show_welcome_message(self):
         """Show welcome message in chat."""
         if self._gemini_configured and hasattr(self, '_messages_frame'):
-            persona = getattr(self.config, 'chatbot_persona', '')
-            if persona:
-                welcome_msg = f"Hello! I'm ready to chat with you. {persona}"
-            else:
-                welcome_msg = "Hello! I'm your AI assistant powered by Gemini. I can help with image analysis and answer your questions. Type 'help' to see what I can do!"
+            # Use a user-friendly welcome message instead of the internal persona configuration
+            welcome_msg = "Hello! I'm your AI assistant powered by Gemini. I can help with image analysis and answer your questions. Just type your question and I'll analyze what I see!"
             self._add_chat_message("AI", welcome_msg)
         elif hasattr(self, '_messages_frame'):
-            self._add_chat_message("System", 
+            self._add_chat_message("System",
                 "Welcome! To enable AI chat, please configure your Gemini API key in Settings > Chatbot.")
+
+    def cleanup_resources(self):
+        """Clean up resources when closing the application."""
+        logging.info("Starting application cleanup...")
+
+        # Stop webcam service
+        if hasattr(self, 'webcam_service') and self.webcam_service:
+            try:
+                self.webcam_service.stop()
+                logging.info("Webcam service stopped")
+            except Exception as e:
+                logging.error(f"Failed to stop webcam service: {e}")
+
+        # Shutdown workflow orchestrator
+        if hasattr(self, 'workflow_orchestrator') and self.workflow_orchestrator:
+            try:
+                self.workflow_orchestrator.shutdown()
+                logging.info("Workflow orchestrator shutdown successfully")
+            except Exception as e:
+                logging.error(f"Failed to shutdown workflow orchestrator: {e}")
+
+        # Cleanup reference manager
+        if hasattr(self, 'reference_manager') and self.reference_manager:
+            try:
+                # Save any pending references
+                if hasattr(self.reference_manager, 'cleanup'):
+                    self.reference_manager.cleanup()
+                logging.info("Reference manager cleanup completed")
+            except Exception as e:
+                logging.error(f"Failed to cleanup reference manager: {e}")
+
+        # Clean up other services
+        for service_name in ['detection_service', 'inference_service', 'training_service',
+                            'annotation_service', 'object_training_service', 'image_analysis_service']:
+            if hasattr(self, service_name):
+                service = getattr(self, service_name)
+                if service and hasattr(service, 'cleanup'):
+                    try:
+                        service.cleanup()
+                        logging.info(f"{service_name} cleanup completed")
+                    except Exception as e:
+                        logging.error(f"Failed to cleanup {service_name}: {e}")
+
+        # Save configuration
+        if hasattr(self, 'config_manager'):
+            try:
+                self.config_manager.save()
+                logging.info("Configuration saved")
+            except Exception as e:
+                logging.error(f"Failed to save config: {e}")
+
+        logging.info("Application cleanup completed")

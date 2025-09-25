@@ -5,12 +5,19 @@ from .detection_service import DetectionService
 from .inference_service import InferenceService
 from .training_service import TrainingService
 from .annotation_service import AnnotationService
-from .gemini_service import GeminiService
+from .gemini_service import GeminiService, AsyncGeminiService
 from .difference_detection_service import DifferenceDetectionService
 from .object_training_service import ObjectTrainingService
+from .image_analysis_service import ImageAnalysisService
+from .yolo_comparison_service import YoloComparisonService
+from .integrated_analysis_service import IntegratedAnalysisService
+from .yolo_chatbot_factory import YoloChatbotFactory
+from .reference_manager import ReferenceImageManager
 
 __all__ = [
-    "WebcamService", "DetectionService", "InferenceService", 
-    "TrainingService", "AnnotationService", "GeminiService",
-    "DifferenceDetectionService", "ObjectTrainingService"
+    "WebcamService", "DetectionService", "InferenceService",
+    "TrainingService", "AnnotationService", "GeminiService", "AsyncGeminiService",
+    "DifferenceDetectionService", "ObjectTrainingService", "ImageAnalysisService",
+    "YoloComparisonService", "IntegratedAnalysisService", "YoloChatbotFactory",
+    "ReferenceImageManager"
 ]

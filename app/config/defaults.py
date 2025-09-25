@@ -69,7 +69,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "gemini_timeout": 30,
     "gemini_temperature": 0.7,  # 0.0 to 1.0
     "gemini_max_tokens": 2048,
-    "enable_ai_analysis": False,
+    "enable_ai_analysis": False,  # Will be auto-enabled if secure API key is configured
     "chat_history_limit": 100,
     "chat_auto_save": True,
     "response_format": "Detailed",  # Brief, Detailed, Technical

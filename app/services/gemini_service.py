@@ -1,4 +1,12 @@
-"""Gemini API service for image analysis and comparison using official Google SDK."""
+"""Gemini API service for image analysis and comparison using official Google SDK.
+
+Security Features:
+- Comprehensive input validation and sanitization
+- API key validation and secure handling
+- Rate limiting and request timeout protection
+- Content filtering for sensitive information
+- Secure error handling without information disclosure
+"""
 
 import base64
 import io
@@ -25,6 +33,12 @@ except ImportError:
 from ..core.exceptions import WebcamError
 from ..core.performance import performance_timer, LRUCache, ThreadPool
 from ..core.cache_manager import generate_image_hash
+from ..utils.validation import (
+    InputValidator,
+    ContentFilter,
+    ValidationError,
+    validate_user_prompt
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +46,30 @@ logger = logging.getLogger(__name__)
 class GeminiService:
     """Service for interacting with Google's Gemini API for image analysis using official SDK."""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-1.5-flash", 
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-1.5-flash",
                  timeout: int = 30, temperature: float = 0.7, max_tokens: int = 2048,
                  persona: Optional[str] = None):
-        """Initialize the Gemini service with configuration."""
-        self.api_key = api_key
-        self.model_name = model
-        self.timeout = timeout
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.persona = persona or ""
+        """Initialize the Gemini service with configuration.
+
+        Args:
+            api_key: Gemini API key (validated for format)
+            model: Model name (validated against supported models)
+            timeout: Request timeout in seconds (5-300)
+            temperature: Generation temperature (0.0-1.0)
+            max_tokens: Maximum response tokens (1-8192)
+            persona: Optional persona/system prompt (sanitized)
+
+        Raises:
+            ValidationError: If any parameter is invalid
+            ValueError: If API key format is invalid
+        """
+        # Validate and sanitize inputs
+        self.api_key = self._validate_api_key(api_key) if api_key else None
+        self.model_name = self._validate_model_name(model)
+        self.timeout = self._validate_timeout(timeout)
+        self.temperature = self._validate_temperature(temperature)
+        self.max_tokens = self._validate_max_tokens(max_tokens)
+        self.persona = self._sanitize_persona(persona) if persona else ""
         
         # SDK objects
         self.model = None
@@ -76,13 +104,25 @@ class GeminiService:
             self.configure_api(api_key)
         
     def configure_api(self, api_key: str) -> None:
-        """Configure Gemini API with SDK."""
+        """Configure Gemini API with SDK.
+
+        Args:
+            api_key: The API key to configure
+
+        Raises:
+            RuntimeError: If SDK is not available
+            ValidationError: If API key is invalid
+            WebcamError: If configuration fails
+        """
         if not SDK_AVAILABLE:
             raise RuntimeError("Google Generative AI SDK not available")
-        
+
+        # Validate API key before using
+        validated_key = self._validate_api_key(api_key)
+
         try:
-            genai.configure(api_key=api_key)
-            self.api_key = api_key
+            genai.configure(api_key=validated_key)
+            self.api_key = validated_key
             
             # Create model with safety settings
             safety_settings = {
@@ -110,7 +150,14 @@ class GeminiService:
             raise WebcamError(f"Failed to configure Gemini API: {e}")
     
     def set_api_key(self, api_key: str) -> None:
-        """Set the API key for the service."""
+        """Set the API key for the service.
+
+        Args:
+            api_key: The API key to set (will be validated)
+
+        Raises:
+            ValidationError: If API key is invalid
+        """
         self.configure_api(api_key)
     
     def update_configuration(self, **kwargs) -> None:
@@ -151,21 +198,65 @@ class GeminiService:
             self.configure_api(self.api_key)
         
     def is_configured(self) -> bool:
-        """Check if the service is properly configured with an API key."""
-        return bool(self.api_key and self.api_key.strip() and self.model is not None)
+        """Check if the service is properly configured with an API key.
+
+        Returns:
+            bool: True if service can be used for API calls
+        """
+        # Check SDK availability first
+        if not SDK_AVAILABLE:
+            logger.debug("Gemini SDK not available")
+            return False
+
+        # Check API key validity
+        if not self.api_key or not self.api_key.strip():
+            logger.debug("No API key provided")
+            return False
+
+        # Validate API key format
+        try:
+            self._validate_api_key(self.api_key)
+        except Exception as e:
+            logger.debug(f"API key validation failed: {e}")
+            return False
+
+        # Check if model is initialized (this indicates successful configuration)
+        if self.model is None:
+            logger.debug("Gemini model not initialized - attempting configuration")
+            # Try to configure the API if we have a valid key but no model
+            try:
+                self.configure_api(self.api_key)
+                return self.model is not None
+            except Exception as e:
+                logger.debug(f"API configuration failed: {e}")
+                return False
+
+        return True
     
     def start_chat_session(self, persona: Optional[str] = None) -> None:
-        """Start a new chat session with custom persona."""
+        """Start a new chat session with custom persona.
+
+        Args:
+            persona: Optional persona/system prompt (will be sanitized)
+
+        Raises:
+            ValueError: If API not configured
+            ValidationError: If persona contains invalid content
+            WebcamError: If session creation fails
+        """
         if not self.model:
             raise ValueError("API not configured")
-        
+
         try:
             history = []
             if persona and persona.strip():
+                # Sanitize and validate persona
+                sanitized_persona = self._sanitize_persona(persona)
+
                 # Add persona as system instruction
                 history.append({
                     "role": "user",
-                    "parts": [f"System: {persona.strip()}"]
+                    "parts": [f"System: {sanitized_persona}"]
                 })
                 history.append({
                     "role": "model", 
@@ -182,15 +273,44 @@ class GeminiService:
     
     @performance_timer("gemini_send_message")
     def send_message(self, message: str, image_data: Optional[bytes] = None) -> str:
-        """Send message with optional image to Gemini with caching."""
+        """Send message with optional image to Gemini with caching.
+
+        Args:
+            message: User message (will be validated and sanitized)
+            image_data: Optional image data (will be validated)
+
+        Returns:
+            str: AI response
+
+        Raises:
+            ValidationError: If input is invalid
+            WebcamError: If API request fails
+        """
+        # Validate and sanitize message
+        if not isinstance(message, str) or not message.strip():
+            raise ValidationError("Message must be a non-empty string")
+
+        sanitized_message = validate_user_prompt(message)
+
+        # Check for sensitive content
+        if ContentFilter.contains_sensitive_info(sanitized_message):
+            logger.warning("Sensitive content detected in message, filtering")
+            sanitized_message = ContentFilter.filter_sensitive_content(sanitized_message)
+
+        # Validate image data if provided
+        if image_data is not None:
+            is_valid, error_msg = InputValidator.validate_image_data(image_data)
+            if not is_valid:
+                raise ValidationError(f"Invalid image data: {error_msg}")
+
         # Generate cache key
-        cache_key = self._generate_cache_key(message, image_data)
-        
+        cache_key = self._generate_cache_key(sanitized_message, image_data)
+
         # Try to get from cache first
         cached_response = self._response_cache.get(cache_key)
         if cached_response is not None:
             return cached_response
-        
+
         if not self.chat_session:
             self.start_chat_session(self.persona)
         
@@ -205,10 +325,10 @@ class GeminiService:
             if image_data:
                 # Convert bytes to PIL Image for SDK
                 pil_image = Image.open(io.BytesIO(image_data))
-                response = self.chat_session.send_message([message, pil_image])
+                response = self.chat_session.send_message([sanitized_message, pil_image])
             else:
                 # Text-only message
-                response = self.chat_session.send_message(message)
+                response = self.chat_session.send_message(sanitized_message)
             
             self._last_request_time = time.time()
             result = response.text
@@ -218,9 +338,21 @@ class GeminiService:
             
             return result
             
+        except ValidationError:
+            # Re-raise validation errors
+            raise
         except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            raise WebcamError(f"Gemini API error: {e}")
+            # Log error without exposing sensitive information
+            error_msg = "Gemini API request failed"
+            if "quota" in str(e).lower():
+                error_msg = "API quota exceeded - please check your usage limits"
+            elif "api key" in str(e).lower():
+                error_msg = "API authentication failed - please check your API key"
+            elif "timeout" in str(e).lower():
+                error_msg = "API request timed out - please try again"
+
+            logger.error(f"Gemini API error: {type(e).__name__}")
+            raise WebcamError(error_msg)
     
     def _generate_cache_key(self, message: str, image_data: Optional[bytes] = None) -> str:
         """Generate cache key for request."""
@@ -269,13 +401,41 @@ class GeminiService:
     
     @performance_timer("gemini_analyze_image")
     def analyze_single_image(self, image: np.ndarray, prompt: str = None) -> str:
-        """Analyze a single image with optional custom prompt."""
+        """Analyze a single image with optional custom prompt.
+
+        Args:
+            image: Image array to analyze
+            prompt: Optional custom prompt (will be validated and sanitized)
+
+        Returns:
+            str: Analysis result
+
+        Raises:
+            ValidationError: If inputs are invalid
+            WebcamError: If analysis fails
+        """
+        # Validate image input
+        if not isinstance(image, np.ndarray):
+            raise ValidationError("Image must be a numpy array")
+
+        if image.size == 0:
+            raise ValidationError("Image array is empty")
+
+        # Use default prompt if none provided
         if prompt is None:
             prompt = "Describe this image in detail, focusing on objects, their positions, and any notable features."
-        
+
+        # Validate and sanitize prompt
+        sanitized_prompt = validate_user_prompt(prompt)
+
+        # Check for sensitive content
+        if ContentFilter.contains_sensitive_info(sanitized_prompt):
+            logger.warning("Sensitive content detected in analysis prompt, filtering")
+            sanitized_prompt = ContentFilter.filter_sensitive_content(sanitized_prompt)
+
         # Generate cache key for image analysis
         image_hash = generate_image_hash(image)
-        cache_key = f"analyze:{image_hash}:{hashlib.md5(prompt.encode()).hexdigest()}"
+        cache_key = f"analyze:{image_hash}:{hashlib.md5(sanitized_prompt.encode()).hexdigest()}"
         
         # Try cache first
         cached_result = self._response_cache.get(cache_key)
@@ -283,8 +443,8 @@ class GeminiService:
             return cached_result
         
         pil_image = self._numpy_to_pil(image)
-        contents = [prompt, pil_image]
-        
+        contents = [sanitized_prompt, pil_image]
+
         result = self._generate_content(contents)
         
         # Cache result
@@ -354,6 +514,119 @@ class GeminiService:
         highlight_regions = self._parse_highlight_regions(analysis)
         
         return analysis, highlight_regions
+
+    def _validate_api_key(self, api_key: str) -> str:
+        """Validate Gemini API key format.
+
+        Args:
+            api_key: The API key to validate
+
+        Returns:
+            str: The validated API key
+
+        Raises:
+            ValidationError: If API key is invalid
+        """
+        if not api_key or not isinstance(api_key, str):
+            raise ValidationError("API key must be a non-empty string")
+
+        # Validate API key format
+        from ..utils.validation import EnvironmentValidator
+        if not EnvironmentValidator.validate_api_key(api_key):
+            raise ValidationError("Invalid API key format")
+
+        return api_key
+
+    def _validate_model_name(self, model: str) -> str:
+        """Validate model name.
+
+        Args:
+            model: The model name to validate
+
+        Returns:
+            str: The validated model name
+
+        Raises:
+            ValidationError: If model name is invalid
+        """
+        if not model or not isinstance(model, str):
+            raise ValidationError("Model name must be a non-empty string")
+
+        from ..utils.validation import EnvironmentValidator
+        if not EnvironmentValidator.validate_model_name(model):
+            logger.warning(f"Unrecognized model name: {model}, proceeding anyway")
+
+        return model
+
+    def _validate_timeout(self, timeout: int) -> int:
+        """Validate timeout value.
+
+        Args:
+            timeout: The timeout in seconds
+
+        Returns:
+            int: The validated timeout
+
+        Raises:
+            ValidationError: If timeout is invalid
+        """
+        from ..utils.validation import EnvironmentValidator
+        return EnvironmentValidator.validate_numeric_range(timeout, 5, 300, int)
+
+    def _validate_temperature(self, temperature: float) -> float:
+        """Validate temperature value.
+
+        Args:
+            temperature: The temperature value
+
+        Returns:
+            float: The validated temperature
+
+        Raises:
+            ValidationError: If temperature is invalid
+        """
+        from ..utils.validation import EnvironmentValidator
+        return EnvironmentValidator.validate_numeric_range(temperature, 0.0, 1.0, float)
+
+    def _validate_max_tokens(self, max_tokens: int) -> int:
+        """Validate max tokens value.
+
+        Args:
+            max_tokens: The maximum tokens
+
+        Returns:
+            int: The validated max tokens
+
+        Raises:
+            ValidationError: If max tokens is invalid
+        """
+        from ..utils.validation import EnvironmentValidator
+        return EnvironmentValidator.validate_numeric_range(max_tokens, 1, 8192, int)
+
+    def _sanitize_persona(self, persona: str) -> str:
+        """Sanitize persona/system prompt.
+
+        Args:
+            persona: The persona to sanitize
+
+        Returns:
+            str: The sanitized persona
+
+        Raises:
+            ValidationError: If persona contains invalid content
+        """
+        if not persona or not isinstance(persona, str):
+            return ""
+
+        # Use input validator to sanitize
+        sanitized = InputValidator.sanitize_string_input(persona, max_length=5000)
+
+        # Check for sensitive content
+        if ContentFilter.contains_sensitive_info(sanitized):
+            logger.warning("Sensitive content detected in persona, filtering")
+            sanitized = ContentFilter.filter_sensitive_content(sanitized)
+
+        return sanitized
     
     def _parse_highlight_regions(self, analysis_text: str) -> Dict[str, Any]:
         """Parse analysis text to extract highlight regions (simplified implementation)."""
@@ -391,11 +664,118 @@ class GeminiService:
 
 class AsyncGeminiService(GeminiService):
     """Asynchronous wrapper for Gemini service to prevent UI blocking."""
-    
+
     def __init__(self, api_key: Optional[str] = None, **kwargs):
-        super().__init__(api_key, **kwargs)
+        # Enhanced initialization with environment variable fallback
+        effective_api_key = self._resolve_api_key(api_key)
+        super().__init__(effective_api_key, **kwargs)
         self._thread_pool = []
+
+        # Track configuration state for debugging
+        self._config_diagnostics = {
+            'input_api_key': api_key,
+            'effective_api_key': effective_api_key,
+            'sdk_available': SDK_AVAILABLE,
+            'initialization_time': time.time(),
+            'last_config_check': None,
+            'last_config_error': None
+        }
+
+    def _resolve_api_key(self, provided_key: Optional[str]) -> Optional[str]:
+        """Resolve API key from multiple sources with priority order.
+
+        Priority:
+        1. Explicitly provided key parameter
+        2. Environment variable GEMINI_API_KEY
+        3. Environment file (.env)
+
+        Returns:
+            str: The resolved API key or None
+        """
+        # 1. Use explicitly provided key if valid
+        if provided_key and provided_key.strip():
+            logger.debug("Using explicitly provided API key")
+            return provided_key.strip()
+
+        # 2. Try environment variable
+        import os
+        env_key = os.getenv('GEMINI_API_KEY')
+        if env_key and env_key.strip():
+            logger.debug("Using API key from environment variable")
+            return env_key.strip()
+
+        # 3. Try loading from .env file
+        try:
+            from ..config.env_config import load_env_file, get_env_var
+            env_vars = load_env_file()
+            env_file_key = get_env_var('GEMINI_API_KEY', env_vars=env_vars)
+            if env_file_key and env_file_key.strip():
+                logger.debug("Using API key from .env file")
+                return env_file_key.strip()
+        except Exception as e:
+            logger.debug(f"Could not load API key from .env file: {e}")
+
+        logger.debug("No API key found in any source")
+        return None
     
+    def is_configured(self) -> bool:
+        """Enhanced configuration check with diagnostic tracking."""
+        self._config_diagnostics['last_config_check'] = time.time()
+
+        try:
+            result = super().is_configured()
+            self._config_diagnostics['last_config_error'] = None
+            return result
+        except Exception as e:
+            self._config_diagnostics['last_config_error'] = str(e)
+            logger.error(f"Configuration check failed: {e}")
+            return False
+
+    def get_configuration_status(self) -> Dict[str, Any]:
+        """Get detailed configuration status for debugging.
+
+        Returns:
+            dict: Comprehensive configuration state information
+        """
+        status = {
+            'is_configured': False,
+            'has_api_key': bool(self.api_key and self.api_key.strip()),
+            'has_model': bool(self.model),
+            'sdk_available': SDK_AVAILABLE,
+            'api_key_valid_format': False,
+            'diagnostics': self._config_diagnostics,
+            'config_sources': [],
+            'errors': []
+        }
+
+        # Check API key format
+        if self.api_key and self.api_key.strip():
+            try:
+                self._validate_api_key(self.api_key)
+                status['api_key_valid_format'] = True
+                status['config_sources'].append('API key format valid')
+            except Exception as e:
+                status['errors'].append(f"API key format invalid: {e}")
+
+        # Check model initialization
+        if not self.model and self.api_key:
+            try:
+                # Attempt to configure if we have key but no model
+                self.configure_api(self.api_key)
+                status['has_model'] = bool(self.model)
+                if self.model:
+                    status['config_sources'].append('Model configured successfully')
+            except Exception as e:
+                status['errors'].append(f"Model configuration failed: {e}")
+
+        # Final configuration check
+        try:
+            status['is_configured'] = self.is_configured()
+        except Exception as e:
+            status['errors'].append(f"Configuration check failed: {e}")
+
+        return status
+
     def update_config(self, **kwargs) -> None:
         """Update configuration with backward compatibility."""
         self.update_configuration(**kwargs)

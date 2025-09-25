@@ -6,7 +6,10 @@
       "Bash(del test_settings_system.py)",
       "Bash(\".venv/Scripts/python.exe\":*)",
       "Bash(del test_settings_dialog.py)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(py:*)",
+      "Bash(where python)",
+      "Bash(..venvScriptspython.exe debug_config.py)"
     ],
     "deny": [],
     "ask": []

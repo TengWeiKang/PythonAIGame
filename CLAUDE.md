@@ -1,3 +1,104 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+This is a Python desktop application called "Webcam Master Checker" - a local Windows app for schools that captures webcam video, trains object detection models, compares live frames to reference images, and provides educational feedback.
+
+## Common Development Commands
+
+### Running the Application
+```bash
+# Activate virtual environment (if not already active)
+.\.venv\Scripts\activate
+
+# Run the main application
+python main.py
+# OR use the batch file
+run.bat
+```
+
+### Testing
+```bash
+# Run all tests with pytest
+pytest
+
+# Run specific test files
+pytest tests/test_matching.py
+pytest tests/test_core_matching.py
+
+# Run individual test modules
+python test_imports.py
+python test_dialogs.py
+```
+
+### Environment Setup
+```bash
+# Create virtual environment
+python -m venv .venv
+.\.venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Build/Distribution
+```bash
+# Build installer (Windows)
+build_installer.bat
+```
+
+## Architecture Overview
+
+### Core Structure
+- **`app/`** - Main application package with clean layered architecture
+  - **`app/main.py`** - Application entry point with modern UI
+  - **`app/config/`** - Configuration management with dataclasses
+  - **`app/core/`** - Core entities, constants, and utilities
+  - **`app/services/`** - Business logic services (detection, inference, training)
+  - **`app/backends/`** - ML model backends (YOLO integration)
+  - **`app/ui/`** - Modern Tkinter UI components and windows
+  - **`app/utils/`** - Utility functions (geometry, crypto, image processing)
+
+### Key Configuration
+- **`config.json`** - Runtime configuration with camera, detection, and AI settings
+- **`requirements.txt`** - Python dependencies including OpenCV, PyTorch, Ultralytics
+- Configuration managed through `app/config/settings.py` with type-safe dataclasses
+
+### ML/AI Integration
+- YOLO models for object detection (YOLOv8, YOLO11, YOLO12)
+- Google Gemini API integration for AI analysis
+- Custom training pipeline for object classification
+- Performance optimization with GPU support
+
+### UI Architecture
+- Modern Tkinter-based GUI with themes
+- Component-based architecture in `app/ui/components/`
+- Separate dialogs for different workflows
+- Canvas-based image display with annotations
+
+## Key Services
+
+- **DetectionService** - Object detection using YOLO models
+- **InferenceService** - Real-time inference on webcam frames
+- **TrainingService** - Custom model training workflows
+- **WebcamService** - Camera capture and management
+- **GeminiService** - AI-powered image analysis and comparison
+
+## Testing Strategy
+- Unit tests in `tests/` directory using pytest
+- Integration tests for UI components (`test_dialogs.py`)
+- Import validation (`test_imports.py`)
+- Core matching algorithm tests (`test_core_matching.py`)
+
+## Data Management
+- **`data/`** - Application data directory
+  - **`data/models/`** - Trained ML models
+  - **`data/master/`** - Reference images
+  - **`data/results/`** - Export results
+- Settings automatically saved to `config.json`
+
 # Development Guidelines
 
 ## Philosophy
