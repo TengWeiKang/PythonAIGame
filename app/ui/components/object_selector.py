@@ -59,56 +59,81 @@ class ObjectSelector:
         """Display the current image on the canvas."""
         if self.current_image is None:
             return
-        
+
         try:
             # Clear previous image
             if self.canvas_image_id:
                 self.canvas.delete(self.canvas_image_id)
-            
-            # Get canvas dimensions
-            self.canvas.update_idletasks()
+
+            # Get canvas dimensions with proper update
+            self.canvas.update()
             canvas_width = self.canvas.winfo_width()
             canvas_height = self.canvas.winfo_height()
-            
+
             if canvas_width <= 1 or canvas_height <= 1:
+                # Schedule retry if canvas not ready
+                self.canvas.after(100, self._display_image)
                 return
-            
+
+            # Validate image
+            if self.current_image.size == 0:
+                self.logger.error("Invalid or empty image")
+                return
+
             # Convert BGR to RGB
             if len(self.current_image.shape) == 3 and self.current_image.shape[2] == 3:
                 image_rgb = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2RGB)
+            elif len(self.current_image.shape) == 3 and self.current_image.shape[2] == 4:
+                image_rgb = cv2.cvtColor(self.current_image, cv2.COLOR_BGRA2RGB)
             else:
                 image_rgb = self.current_image
-            
+
             # Calculate scaling to fit canvas
             img_height, img_width = image_rgb.shape[:2]
+
+            if img_width <= 0 or img_height <= 0:
+                self.logger.error("Invalid image dimensions")
+                return
+
             scale = min(canvas_width / img_width, canvas_height / img_height)
-            
-            new_width = int(img_width * scale)
-            new_height = int(img_height * scale)
-            
+            scale = min(scale, 1.0)  # Don't upscale
+
+            new_width = max(1, int(img_width * scale))
+            new_height = max(1, int(img_height * scale))
+
             # Store image transformation parameters
             self.image_scale = scale
             self.image_offset_x = (canvas_width - new_width) // 2
             self.image_offset_y = (canvas_height - new_height) // 2
-            
-            # Resize image
-            if new_width > 0 and new_height > 0:
-                resized_image = cv2.resize(image_rgb, (new_width, new_height))
-                
-                # Convert to PhotoImage
-                pil_image = Image.fromarray(resized_image)
-                self.photo = ImageTk.PhotoImage(pil_image)
-                
-                # Display on canvas
-                self.canvas_image_id = self.canvas.create_image(
-                    canvas_width // 2,
-                    canvas_height // 2,
-                    anchor="center",
-                    image=self.photo
-                )
-                
+
+            # Resize image with proper interpolation
+            resized_image = cv2.resize(image_rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+            # Convert to PhotoImage
+            pil_image = Image.fromarray(resized_image)
+            self.photo = ImageTk.PhotoImage(pil_image)
+
+            # Display on canvas
+            self.canvas_image_id = self.canvas.create_image(
+                canvas_width // 2,
+                canvas_height // 2,
+                anchor="center",
+                image=self.photo
+            )
+
         except Exception as e:
             self.logger.error(f"Failed to display image: {e}")
+            # Show error on canvas
+            self.canvas.delete("all")
+            self.canvas.create_text(
+                self.canvas.winfo_width() // 2 if self.canvas.winfo_width() > 1 else 150,
+                self.canvas.winfo_height() // 2 if self.canvas.winfo_height() > 1 else 100,
+                anchor="center",
+                text=f"Error loading image:\n{str(e)}",
+                fill="red",
+                font=("Arial", 10),
+                justify="center"
+            )
     
     def clear_image(self) -> None:
         """Clear the current image."""

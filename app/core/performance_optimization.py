@@ -278,22 +278,6 @@ class PerformanceProfiler:
                 'max_memory_delta_mb': max(memory_deltas),
                 'total_time_ms': sum(durations)
             }
-
-    def get_performance_report(self) -> Dict[str, Any]:
-        """Generate comprehensive performance report."""
-        with self._lock:
-            operations = list(self._operation_stats.keys())
-            report = {
-                'total_operations': len(self._metrics),
-                'operation_types': len(operations),
-                'operations': {}
-            }
-
-            for operation in operations:
-                report['operations'][operation] = self.get_operation_statistics(operation)
-
-            return report
-
 class ResourcePoolManager:
     """Manages resource pools to prevent resource exhaustion."""
 

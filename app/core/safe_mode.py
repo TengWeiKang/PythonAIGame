@@ -489,26 +489,18 @@ class SafeModeManager:
             # Detection settings (conservative)
             'detection_confidence_threshold': 0.5,
             'detection_iou_threshold': 0.5,
-            'use_gpu': False,  # Use CPU for stability
 
             # Gemini settings (basic)
             'gemini_model': 'gemini-1.5-flash',  # Fastest model
             'gemini_timeout': 30,
             'gemini_temperature': 0.0,  # Deterministic
             'gemini_max_tokens': 1000,
-            'requests_per_minute': 5,  # Conservative rate limiting
-            'enable_rate_limiting': True,
 
             # UI settings (minimal)
             'startup_fullscreen': False,
             'remember_window_state': False,
             'window_width': 800,
             'window_height': 600,
-
-            # Safety features
-            'auto_save_config': True,
-            'enable_error_recovery': True,
-            'safe_mode_enabled': True
         }
 
     def _initialize_features(self) -> None:

@@ -604,16 +604,3 @@ def run_in_thread(pool_type: str = 'main', priority: TaskPriority = TaskPriority
             return manager.submit_task(func, *args, pool_type=pool_type, priority=priority, **kwargs)
         return wrapper
     return decorator
-
-def thread_safe(lock_name: str = None):
-    """Decorator to make function thread-safe."""
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            manager = get_threading_manager()
-            lock_name_actual = lock_name or f"{func.__module__}.{func.__name__}"
-            lock = manager.get_thread_safe_lock(lock_name_actual)
-            
-            with lock:
-                return func(*args, **kwargs)
-        return wrapper
-    return decorator

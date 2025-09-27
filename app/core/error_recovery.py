@@ -43,9 +43,6 @@ from .exceptions import (
     ApplicationError, ConfigurationError, ServiceError,
     ValidationError, ModelError, WebcamError, SecurityError
 )
-from ..config.settings import Config
-from ..config.types import ConfigVersion
-
 logger = logging.getLogger(__name__)
 
 

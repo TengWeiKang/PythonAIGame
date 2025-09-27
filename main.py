@@ -8,7 +8,6 @@ import os
 import logging
 import traceback
 from pathlib import Path
-from typing import Optional, Dict, Any
 import tkinter as tk
 
 # Add the current directory to path for app imports
@@ -168,7 +167,7 @@ def setup_console_encoding() -> None:
 
 def display_startup_info(config: Config) -> None:
     """Display startup information with Windows-compatible ASCII characters."""
-    setup_console_encoding()
+    #setup_console_encoding()
 
     # Use ASCII-safe characters for Windows compatibility
     try:
@@ -212,9 +211,6 @@ def display_startup_info(config: Config) -> None:
 def validate_system_requirements() -> bool:
     """Validate system requirements and dependencies."""
     try:
-        import numpy
-        import cv2
-        import PIL
         logging.info("Core dependencies validated")
 
         # Check Python version
@@ -278,18 +274,6 @@ def main() -> int:
             # Setup directories
             setup_directories(config)
 
-            # Start performance monitoring
-            try:
-                PerformanceMonitor.instance().start()
-                logger.info("Performance monitoring started")
-            except Exception as e:
-                logger.warning(f"Failed to start performance monitoring: {e}")
-
-            # Setup health monitoring
-            setup_default_health_checks(config)
-            health_monitor = get_health_monitor()
-            health_monitor.start()
-            logger.info("Health monitoring started")
 
             # Display startup information
             display_startup_info(config)

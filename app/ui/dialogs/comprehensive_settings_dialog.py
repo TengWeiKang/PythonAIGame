@@ -8,16 +8,15 @@ import json
 import threading
 import logging
 from typing import Callable, Optional, Dict, Any, List
-from dataclasses import asdict
 import cv2
 from PIL import Image, ImageTk
 import time
 
 logger = logging.getLogger(__name__)
 
-from ...config.settings import Config, save_config
-from ...config.settings_manager import get_settings_manager, SettingsManager
-from ...config.validation import SettingsValidator, SettingsPresets, ValidationResult
+from ...config.settings import Config
+from ...config.settings_manager import get_settings_manager
+from ...config.validation import SettingsValidator
 from ...services.gemini_service import GeminiService
 from ...services.webcam_service import WebcamService
 
@@ -41,7 +40,7 @@ class ComprehensiveSettingsDialog:
         'border': '#404040',
     }
     
-    def __init__(self, parent: tk.Tk, config: Config, services: Dict[str, Any], 
+    def __init__(self, parent: tk.Tk, config: dict, services: Dict[str, Any], 
                  callback: Optional[Callable] = None):
         """Initialize the comprehensive settings dialog."""
         self.parent = parent
@@ -138,55 +137,24 @@ class ComprehensiveSettingsDialog:
     def _init_variables(self):
         """Initialize all tkinter variables for settings."""
         # General settings
-        self.theme_var = tk.StringVar()
         self.language_var = tk.StringVar()
-        self.auto_save_var = tk.BooleanVar()
-        self.debug_var = tk.BooleanVar()
-        self.startup_fullscreen_var = tk.BooleanVar()
-        self.remember_window_var = tk.BooleanVar()
-        self.remember_window_state_var = tk.BooleanVar()
-        self.performance_mode_var = tk.StringVar()
-        self.memory_limit_var = tk.IntVar()
-        self.enable_logging_var = tk.BooleanVar()
-        self.log_level_var = tk.StringVar()
-        self.auto_save_interval_var = tk.IntVar()
-        # Removed: check_updates_var, update_interval_var, backup_on_change_var
         
         # Webcam settings
         self.camera_index_var = tk.IntVar()
         self.camera_width_var = tk.IntVar()
         self.camera_height_var = tk.IntVar()
         self.camera_fps_var = tk.IntVar()
-        self.auto_exposure_var = tk.BooleanVar()
-        self.auto_focus_var = tk.BooleanVar()
-        self.brightness_var = tk.IntVar()
-        self.contrast_var = tk.IntVar()
-        self.saturation_var = tk.IntVar()
-        self.recording_format_var = tk.StringVar()
-        self.buffer_size_var = tk.IntVar()
-        self.preview_enabled_var = tk.BooleanVar()
         self.camera_device_name_var = tk.StringVar()
         
         # Image Analysis settings
         self.confidence_threshold_var = tk.DoubleVar()
         self.iou_threshold_var = tk.DoubleVar()
-        # Removed: noise_reduction_var, contrast_enhancement_var 
-        self.enable_roi_var = tk.BooleanVar()
-        self.roi_x_var = tk.IntVar()
-        self.roi_y_var = tk.IntVar()
-        self.roi_width_var = tk.IntVar()
-        self.roi_height_var = tk.IntVar()
         self.preferred_model_var = tk.StringVar()
         # Removed: export_format_var (now hardcoded to PNG)
-        self.export_quality_var = tk.IntVar()  # Always 100%
-        self.difference_sensitivity_var = tk.DoubleVar()
-        self.highlight_differences_var = tk.BooleanVar()
-        self.reference_image_path_var = tk.StringVar()
-        self.analysis_history_days_var = tk.IntVar()
         self.export_metadata_var = tk.BooleanVar()
-        self.default_data_dir_var = tk.StringVar()
-        self.default_models_dir_var = tk.StringVar()
-        self.default_results_dir_var = tk.StringVar()
+        self.data_dir_var = tk.StringVar()
+        self.models_dir_var = tk.StringVar()
+        self.results_dir_var = tk.StringVar()
         
         # Chatbot settings
         self.api_key_var = tk.StringVar()
@@ -194,15 +162,6 @@ class ComprehensiveSettingsDialog:
         self.timeout_var = tk.IntVar()
         self.temperature_var = tk.DoubleVar()
         self.max_tokens_var = tk.IntVar()
-        self.enable_ai_var = tk.BooleanVar()
-        self.chat_history_limit_var = tk.IntVar()
-        self.chat_auto_save_var = tk.BooleanVar()
-        self.response_format_var = tk.StringVar()
-        self.enable_rate_limiting_var = tk.BooleanVar()
-        self.requests_per_minute_var = tk.IntVar()
-        self.context_window_var = tk.IntVar()
-        self.conversation_memory_var = tk.BooleanVar()
-        self.chat_export_format_var = tk.StringVar()
         self.chatbot_persona_var = tk.StringVar()
         
         # Test results
@@ -211,55 +170,23 @@ class ComprehensiveSettingsDialog:
     def _load_current_settings(self):
         """Load current settings from config into variables."""
         # General settings
-        self.theme_var.set(getattr(self.config, 'app_theme', 'Dark'))
         self.language_var.set(getattr(self.config, 'language', 'en'))
-        self.auto_save_var.set(getattr(self.config, 'auto_save_config', True))
-        self.debug_var.set(getattr(self.config, 'debug', False))
-        self.startup_fullscreen_var.set(getattr(self.config, 'startup_fullscreen', False))
-        self.remember_window_var.set(getattr(self.config, 'remember_window_state', True))
-        self.remember_window_state_var.set(getattr(self.config, 'remember_window_state', True))
-        self.performance_mode_var.set(getattr(self.config, 'performance_mode', 'Balanced'))
-        self.memory_limit_var.set(getattr(self.config, 'max_memory_usage_mb', 2048))
-        self.enable_logging_var.set(getattr(self.config, 'enable_logging', True))
-        self.log_level_var.set(getattr(self.config, 'log_level', 'INFO'))
-        self.auto_save_interval_var.set(getattr(self.config, 'auto_save_interval_minutes', 5))
-        # Removed: check_updates_var, update_interval_var, backup_on_change_var settings
         
         # Webcam settings
         self.camera_index_var.set(getattr(self.config, 'last_webcam_index', 0))
         self.camera_width_var.set(getattr(self.config, 'camera_width', 1280))
         self.camera_height_var.set(getattr(self.config, 'camera_height', 720))
         self.camera_fps_var.set(getattr(self.config, 'camera_fps', 30))
-        self.auto_exposure_var.set(getattr(self.config, 'camera_auto_exposure', True))
-        self.auto_focus_var.set(getattr(self.config, 'camera_auto_focus', True))
-        self.brightness_var.set(getattr(self.config, 'camera_brightness', 0))
-        self.contrast_var.set(getattr(self.config, 'camera_contrast', 0))
-        self.saturation_var.set(getattr(self.config, 'camera_saturation', 0))
-        self.recording_format_var.set(getattr(self.config, 'camera_recording_format', 'MP4'))
-        self.buffer_size_var.set(getattr(self.config, 'camera_buffer_size', 5))
-        self.preview_enabled_var.set(getattr(self.config, 'camera_preview_enabled', True))
         self.camera_device_name_var.set(getattr(self.config, 'camera_device_name', ''))
         
         # Image Analysis settings
         self.confidence_threshold_var.set(getattr(self.config, 'detection_confidence_threshold', 0.5))
-        self.iou_threshold_var.set(getattr(self.config, 'detection_iou_threshold', 0.45))
-        # Removed: noise_reduction_var, contrast_enhancement_var settings
-        self.enable_roi_var.set(getattr(self.config, 'enable_roi', False))
-        self.roi_x_var.set(getattr(self.config, 'roi_x', 0))
-        self.roi_y_var.set(getattr(self.config, 'roi_y', 0))
-        self.roi_width_var.set(getattr(self.config, 'roi_width', 0))
-        self.roi_height_var.set(getattr(self.config, 'roi_height', 0))
         self.preferred_model_var.set(getattr(self.config, 'preferred_model', 'yolo12n'))
         # Removed: export_format_var (always PNG)
-        self.export_quality_var.set(100)  # Always 100% quality
-        self.difference_sensitivity_var.set(getattr(self.config, 'difference_sensitivity', 0.1))
-        self.highlight_differences_var.set(getattr(self.config, 'highlight_differences', True))
-        self.reference_image_path_var.set(getattr(self.config, 'reference_image_path', ''))
-        self.analysis_history_days_var.set(getattr(self.config, 'analysis_history_days', 30))
         self.export_metadata_var.set(getattr(self.config, 'export_include_metadata', True))
-        self.default_data_dir_var.set(getattr(self.config, 'default_data_dir', 'data'))
-        self.default_models_dir_var.set(getattr(self.config, 'default_models_dir', 'data/models'))
-        self.default_results_dir_var.set(getattr(self.config, 'default_results_dir', 'data/results'))
+        self.data_dir_var.set(getattr(self.config, 'data_dir', 'data'))
+        self.models_dir_var.set(getattr(self.config, 'models_dir', 'data/models'))
+        self.results_dir_var.set(getattr(self.config, 'results_dir', 'data/results'))
         
         # Chatbot settings
         self.api_key_var.set(getattr(self.config, 'gemini_api_key', ''))
@@ -267,15 +194,6 @@ class ComprehensiveSettingsDialog:
         self.timeout_var.set(getattr(self.config, 'gemini_timeout', 30))
         self.temperature_var.set(getattr(self.config, 'gemini_temperature', 0.7))
         self.max_tokens_var.set(getattr(self.config, 'gemini_max_tokens', 2048))
-        self.enable_ai_var.set(getattr(self.config, 'enable_ai_analysis', False))
-        self.chat_history_limit_var.set(getattr(self.config, 'chat_history_limit', 100))
-        self.chat_auto_save_var.set(getattr(self.config, 'chat_auto_save', True))
-        self.response_format_var.set(getattr(self.config, 'response_format', 'Detailed'))
-        self.enable_rate_limiting_var.set(getattr(self.config, 'enable_rate_limiting', True))
-        self.requests_per_minute_var.set(getattr(self.config, 'requests_per_minute', 15))
-        self.context_window_var.set(getattr(self.config, 'context_window_size', 4000))
-        self.conversation_memory_var.set(getattr(self.config, 'enable_conversation_memory', True))
-        self.chat_export_format_var.set(getattr(self.config, 'chat_export_format', 'JSON'))
         self.chatbot_persona_var.set(getattr(self.config, 'chatbot_persona', ''))
     
     def _init_change_tracking(self):
@@ -283,51 +201,22 @@ class ComprehensiveSettingsDialog:
         # Store original values for comparison
         self.original_values = {
             # General settings
-            'theme': self.theme_var.get(),
             'language': self.language_var.get(),
-            'auto_save': self.auto_save_var.get(),
-            'debug': self.debug_var.get(),
-            'startup_fullscreen': self.startup_fullscreen_var.get(),
-            'remember_window': self.remember_window_var.get(),
-            'performance_mode': self.performance_mode_var.get(),
-            'memory_limit': self.memory_limit_var.get(),
-            'enable_logging': self.enable_logging_var.get(),
-            'log_level': self.log_level_var.get(),
-            'auto_save_interval': self.auto_save_interval_var.get(),
             
             # Webcam settings
             'camera_index': self.camera_index_var.get(),
             'camera_width': self.camera_width_var.get(),
             'camera_height': self.camera_height_var.get(),
             'camera_fps': self.camera_fps_var.get(),
-            'auto_exposure': self.auto_exposure_var.get(),
-            'auto_focus': self.auto_focus_var.get(),
-            'brightness': self.brightness_var.get(),
-            'contrast': self.contrast_var.get(),
-            'saturation': self.saturation_var.get(),
-            'recording_format': self.recording_format_var.get(),
-            'buffer_size': self.buffer_size_var.get(),
-            'preview_enabled': self.preview_enabled_var.get(),
             'camera_device_name': self.camera_device_name_var.get(),
             
             # Image Analysis settings
             'confidence_threshold': self.confidence_threshold_var.get(),
             'iou_threshold': self.iou_threshold_var.get(),
-            'enable_roi': self.enable_roi_var.get(),
-            'roi_x': self.roi_x_var.get(),
-            'roi_y': self.roi_y_var.get(),
-            'roi_width': self.roi_width_var.get(),
-            'roi_height': self.roi_height_var.get(),
             'preferred_model': self.preferred_model_var.get(),
-            'export_quality': self.export_quality_var.get(),
-            'difference_sensitivity': self.difference_sensitivity_var.get(),
-            'highlight_differences': self.highlight_differences_var.get(),
-            'reference_image_path': self.reference_image_path_var.get(),
-            'analysis_history_days': self.analysis_history_days_var.get(),
-            'export_metadata': self.export_metadata_var.get(),
-            'default_data_dir': self.default_data_dir_var.get(),
-            'default_models_dir': self.default_models_dir_var.get(),
-            'default_results_dir': self.default_results_dir_var.get(),
+            'data_dir': self.data_dir_var.get(),
+            'models_dir': self.models_dir_var.get(),
+            'results_dir': self.results_dir_var.get(),
             
             # Chatbot settings
             'api_key': self.api_key_var.get(),
@@ -335,15 +224,6 @@ class ComprehensiveSettingsDialog:
             'timeout': self.timeout_var.get(),
             'temperature': self.temperature_var.get(),
             'max_tokens': self.max_tokens_var.get(),
-            'enable_ai': self.enable_ai_var.get(),
-            'chat_history_limit': self.chat_history_limit_var.get(),
-            'chat_auto_save': self.chat_auto_save_var.get(),
-            'response_format': self.response_format_var.get(),
-            'enable_rate_limiting': self.enable_rate_limiting_var.get(),
-            'requests_per_minute': self.requests_per_minute_var.get(),
-            'context_window': self.context_window_var.get(),
-            'conversation_memory': self.conversation_memory_var.get(),
-            'chat_export_format': self.chat_export_format_var.get(),
             'chatbot_persona': self.chatbot_persona_var.get(),
         }
         
@@ -358,52 +238,23 @@ class ComprehensiveSettingsDialog:
     def _setup_variable_traces(self):
         """Setup trace callbacks for all variables to detect changes."""
         # General settings
-        self.theme_var.trace('w', lambda *args: self._on_setting_changed('theme'))
         self.language_var.trace('w', lambda *args: self._on_setting_changed('language'))
-        self.auto_save_var.trace('w', lambda *args: self._on_setting_changed('auto_save'))
-        self.debug_var.trace('w', lambda *args: self._on_setting_changed('debug'))
-        self.startup_fullscreen_var.trace('w', lambda *args: self._on_setting_changed('startup_fullscreen'))
-        self.remember_window_var.trace('w', lambda *args: self._on_setting_changed('remember_window'))
-        self.remember_window_state_var.trace('w', lambda *args: self._on_setting_changed('remember_window_state'))
-        self.performance_mode_var.trace('w', lambda *args: self._on_setting_changed('performance_mode'))
-        self.memory_limit_var.trace('w', lambda *args: self._on_setting_changed('memory_limit'))
-        self.enable_logging_var.trace('w', lambda *args: self._on_setting_changed('enable_logging'))
-        self.log_level_var.trace('w', lambda *args: self._on_setting_changed('log_level'))
-        self.auto_save_interval_var.trace('w', lambda *args: self._on_setting_changed('auto_save_interval'))
         
         # Webcam settings
         self.camera_index_var.trace('w', lambda *args: self._on_setting_changed('camera_index'))
         self.camera_width_var.trace('w', lambda *args: self._on_setting_changed('camera_width'))
         self.camera_height_var.trace('w', lambda *args: self._on_setting_changed('camera_height'))
         self.camera_fps_var.trace('w', lambda *args: self._on_setting_changed('camera_fps'))
-        self.auto_exposure_var.trace('w', lambda *args: self._on_setting_changed('auto_exposure'))
-        self.auto_focus_var.trace('w', lambda *args: self._on_setting_changed('auto_focus'))
-        self.brightness_var.trace('w', lambda *args: self._on_setting_changed('brightness'))
-        self.contrast_var.trace('w', lambda *args: self._on_setting_changed('contrast'))
-        self.saturation_var.trace('w', lambda *args: self._on_setting_changed('saturation'))
-        self.recording_format_var.trace('w', lambda *args: self._on_setting_changed('recording_format'))
-        self.buffer_size_var.trace('w', lambda *args: self._on_setting_changed('buffer_size'))
-        self.preview_enabled_var.trace('w', lambda *args: self._on_setting_changed('preview_enabled'))
         self.camera_device_name_var.trace('w', lambda *args: self._on_setting_changed('camera_device_name'))
         
         # Image Analysis settings
         self.confidence_threshold_var.trace('w', lambda *args: self._on_setting_changed('confidence_threshold'))
         self.iou_threshold_var.trace('w', lambda *args: self._on_setting_changed('iou_threshold'))
-        self.enable_roi_var.trace('w', lambda *args: self._on_setting_changed('enable_roi'))
-        self.roi_x_var.trace('w', lambda *args: self._on_setting_changed('roi_x'))
-        self.roi_y_var.trace('w', lambda *args: self._on_setting_changed('roi_y'))
-        self.roi_width_var.trace('w', lambda *args: self._on_setting_changed('roi_width'))
-        self.roi_height_var.trace('w', lambda *args: self._on_setting_changed('roi_height'))
         self.preferred_model_var.trace('w', lambda *args: self._on_setting_changed('preferred_model'))
-        self.export_quality_var.trace('w', lambda *args: self._on_setting_changed('export_quality'))
-        self.difference_sensitivity_var.trace('w', lambda *args: self._on_setting_changed('difference_sensitivity'))
-        self.highlight_differences_var.trace('w', lambda *args: self._on_setting_changed('highlight_differences'))
-        self.reference_image_path_var.trace('w', lambda *args: self._on_setting_changed('reference_image_path'))
-        self.analysis_history_days_var.trace('w', lambda *args: self._on_setting_changed('analysis_history_days'))
         self.export_metadata_var.trace('w', lambda *args: self._on_setting_changed('export_metadata'))
-        self.default_data_dir_var.trace('w', lambda *args: self._on_setting_changed('default_data_dir'))
-        self.default_models_dir_var.trace('w', lambda *args: self._on_setting_changed('default_models_dir'))
-        self.default_results_dir_var.trace('w', lambda *args: self._on_setting_changed('default_results_dir'))
+        self.data_dir_var.trace('w', lambda *args: self._on_setting_changed('data_dir'))
+        self.models_dir_var.trace('w', lambda *args: self._on_setting_changed('models_dir'))
+        self.results_dir_var.trace('w', lambda *args: self._on_setting_changed('results_dir'))
         
         # Chatbot settings
         self.api_key_var.trace('w', lambda *args: self._on_setting_changed('api_key'))
@@ -411,15 +262,6 @@ class ComprehensiveSettingsDialog:
         self.timeout_var.trace('w', lambda *args: self._on_setting_changed('timeout'))
         self.temperature_var.trace('w', lambda *args: self._on_setting_changed('temperature'))
         self.max_tokens_var.trace('w', lambda *args: self._on_setting_changed('max_tokens'))
-        self.enable_ai_var.trace('w', lambda *args: self._on_setting_changed('enable_ai'))
-        self.chat_history_limit_var.trace('w', lambda *args: self._on_setting_changed('chat_history_limit'))
-        self.chat_auto_save_var.trace('w', lambda *args: self._on_setting_changed('chat_auto_save'))
-        self.response_format_var.trace('w', lambda *args: self._on_setting_changed('response_format'))
-        self.enable_rate_limiting_var.trace('w', lambda *args: self._on_setting_changed('enable_rate_limiting'))
-        self.requests_per_minute_var.trace('w', lambda *args: self._on_setting_changed('requests_per_minute'))
-        self.context_window_var.trace('w', lambda *args: self._on_setting_changed('context_window'))
-        self.conversation_memory_var.trace('w', lambda *args: self._on_setting_changed('conversation_memory'))
-        self.chat_export_format_var.trace('w', lambda *args: self._on_setting_changed('chat_export_format'))
         self.chatbot_persona_var.trace('w', lambda *args: self._on_setting_changed('chatbot_persona'))
     
     def _on_setting_changed(self, setting_name):
@@ -444,61 +286,23 @@ class ComprehensiveSettingsDialog:
     def _get_variable_name_for_setting(self, setting_name):
         """Get the tkinter variable name for a setting."""
         variable_mapping = {
-            'theme': 'theme_var',
             'language': 'language_var',
-            'auto_save': 'auto_save_var',
-            'debug': 'debug_var',
-            'startup_fullscreen': 'startup_fullscreen_var',
-            'remember_window': 'remember_window_var',
-            'performance_mode': 'performance_mode_var',
-            'memory_limit': 'memory_limit_var',
-            'enable_logging': 'enable_logging_var',
-            'log_level': 'log_level_var',
-            'auto_save_interval': 'auto_save_interval_var',
             'camera_index': 'camera_index_var',
             'camera_width': 'camera_width_var',
             'camera_height': 'camera_height_var',
             'camera_fps': 'camera_fps_var',
-            'auto_exposure': 'auto_exposure_var',
-            'auto_focus': 'auto_focus_var',
-            'brightness': 'brightness_var',
-            'contrast': 'contrast_var',
-            'saturation': 'saturation_var',
-            'recording_format': 'recording_format_var',
-            'buffer_size': 'buffer_size_var',
-            'preview_enabled': 'preview_enabled_var',
             'camera_device_name': 'camera_device_name_var',
             'confidence_threshold': 'confidence_threshold_var',
             'iou_threshold': 'iou_threshold_var',
-            'enable_roi': 'enable_roi_var',
-            'roi_x': 'roi_x_var',
-            'roi_y': 'roi_y_var',
-            'roi_width': 'roi_width_var',
-            'roi_height': 'roi_height_var',
             'preferred_model': 'preferred_model_var',
-            'export_quality': 'export_quality_var',
-            'difference_sensitivity': 'difference_sensitivity_var',
-            'highlight_differences': 'highlight_differences_var',
-            'reference_image_path': 'reference_image_path_var',
-            'analysis_history_days': 'analysis_history_days_var',
-            'export_metadata': 'export_metadata_var',
-            'default_data_dir': 'default_data_dir_var',
-            'default_models_dir': 'default_models_dir_var',
-            'default_results_dir': 'default_results_dir_var',
+            'data_dir': 'data_dir_var',
+            'models_dir': 'models_dir_var',
+            'results_dir': 'results_dir_var',
             'api_key': 'api_key_var',
             'gemini_model': 'gemini_model_var',
             'timeout': 'timeout_var',
             'temperature': 'temperature_var',
             'max_tokens': 'max_tokens_var',
-            'enable_ai': 'enable_ai_var',
-            'chat_history_limit': 'chat_history_limit_var',
-            'chat_auto_save': 'chat_auto_save_var',
-            'response_format': 'response_format_var',
-            'enable_rate_limiting': 'enable_rate_limiting_var',
-            'requests_per_minute': 'requests_per_minute_var',
-            'context_window': 'context_window_var',
-            'conversation_memory': 'conversation_memory_var',
-            'chat_export_format': 'chat_export_format_var',
             'chatbot_persona': 'chatbot_persona_var',
         }
         return variable_mapping.get(setting_name, f'{setting_name}_var')
@@ -597,7 +401,7 @@ class ComprehensiveSettingsDialog:
         # Title
         title_label = tk.Label(
             main_frame,
-            text="⚙️ Comprehensive Settings",
+            text="⚙️ Settings",
             bg=self.COLORS['bg_primary'],
             fg=self.COLORS['text_primary'],
             font=('Segoe UI', 16, 'bold')
@@ -642,9 +446,6 @@ class ComprehensiveSettingsDialog:
         
         chatbot_tab = self._build_chatbot_tab()
         self.notebook.add(chatbot_tab, text="🤖 Chatbot")
-        
-        advanced_tab = self._build_advanced_tab()
-        self.notebook.add(advanced_tab, text="⚡ Advanced")
     
     def _create_section_frame(self, parent, title: str) -> tuple[tk.Frame, tk.Frame]:
         """Create a styled section frame with title and content area."""
@@ -693,13 +494,13 @@ class ComprehensiveSettingsDialog:
         theme_section, theme_content = self._create_section_frame(scrollable_frame, "🎨 Appearance")
         theme_section.pack(fill='x', pady=(0, 10))
         
-        # Theme selection
-        tk.Label(theme_content, text="Theme:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=0, column=0, sticky='w', pady=5)
+        # # Theme selection
+        # tk.Label(theme_content, text="Theme:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=0, column=0, sticky='w', pady=5)
         
-        theme_combo = ttk.Combobox(theme_content, textvariable=self.theme_var, 
-                                  values=SettingsValidator.VALID_THEMES, state='readonly')
-        theme_combo.grid(row=0, column=1, sticky='w', padx=(10, 0), pady=5)
+        # theme_combo = ttk.Combobox(theme_content, textvariable=self.theme_var, 
+        #                           values=SettingsValidator.VALID_THEMES, state='readonly')
+        # theme_combo.grid(row=0, column=1, sticky='w', padx=(10, 0), pady=5)
         
         # Language selection
         tk.Label(theme_content, text="Language:", bg=self.COLORS['bg_secondary'], 
@@ -709,78 +510,76 @@ class ComprehensiveSettingsDialog:
                                  values=SettingsValidator.VALID_LANGUAGES, state='readonly')
         lang_combo.grid(row=1, column=1, sticky='w', padx=(10, 0), pady=5)
         
-        # Application Behavior Section
-        behavior_section, behavior_content = self._create_section_frame(scrollable_frame, "🏃 Behavior")
-        behavior_section.pack(fill='x', pady=(0, 10))
+        # # Application Behavior Section
+        # behavior_section, behavior_content = self._create_section_frame(scrollable_frame, "🏃 Behavior")
+        # behavior_section.pack(fill='x', pady=(0, 10))
         
-        # Auto-save config
-        self._create_checkbox(behavior_content, "Auto-save configuration changes",
-                             self.auto_save_var).pack(anchor='w', pady=2)
+        # # Auto-save config
+        # self._create_checkbox(behavior_content, "Auto-save configuration changes",
+        #                      self.auto_save_var).pack(anchor='w', pady=2)
         
-        # Debug mode
-        self._create_checkbox(behavior_content, "Enable debug mode",
-                             self.debug_var).pack(anchor='w', pady=2)
+        # # Debug mode
+        # self._create_checkbox(behavior_content, "Enable debug mode",
+        #                      self.debug_var).pack(anchor='w', pady=2)
         
-        # Startup fullscreen
-        self._create_checkbox(behavior_content, "Start in fullscreen mode",
-                             self.startup_fullscreen_var).pack(anchor='w', pady=2)
+        # # Startup fullscreen
+        # self._create_checkbox(behavior_content, "Start in fullscreen mode",
+        #                      self.startup_fullscreen_var).pack(anchor='w', pady=2)
         
-        # Remember window state
-        self._create_checkbox(behavior_content, "Remember window size and position",
-                             self.remember_window_var).pack(anchor='w', pady=2)
+        # # Remember window state
+        # self._create_checkbox(behavior_content, "Remember window size and position",
+        #                      self.remember_window_var).pack(anchor='w', pady=2)
         
-        # Auto-save interval
-        save_frame = tk.Frame(behavior_content, bg=self.COLORS['bg_secondary'])
-        save_frame.pack(fill='x', pady=5)
+        # # Auto-save interval
+        # save_frame = tk.Frame(behavior_content, bg=self.COLORS['bg_secondary'])
+        # save_frame.pack(fill='x', pady=5)
         
-        tk.Label(save_frame, text="Auto-save interval (minutes):", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(save_frame, text="Auto-save interval (minutes):", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        save_spin = tk.Spinbox(save_frame, from_=1, to=60, textvariable=self.auto_save_interval_var,
-                              bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=6)
-        save_spin.pack(side='left', padx=(10, 0))
+        # save_spin = tk.Spinbox(save_frame, from_=1, to=60, textvariable=self.auto_save_interval_var,
+        #                       bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=6)
+        # save_spin.pack(side='left', padx=(10, 0))
         
-        # Backup on change - REMOVED as per requirements
+        # # Performance Section
+        # perf_section, perf_content = self._create_section_frame(scrollable_frame, "⚡ Performance")
+        # perf_section.pack(fill='x', pady=(0, 10))
         
-        # Performance Section
-        perf_section, perf_content = self._create_section_frame(scrollable_frame, "⚡ Performance")
-        perf_section.pack(fill='x', pady=(0, 10))
+        # # Performance mode
+        # tk.Label(perf_content, text="Performance Mode:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=0, column=0, sticky='w', pady=5)
         
-        # Performance mode
-        tk.Label(perf_content, text="Performance Mode:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=0, column=0, sticky='w', pady=5)
+        # perf_combo = ttk.Combobox(perf_content, textvariable=self.performance_mode_var,
+        #                          values=SettingsValidator.VALID_PERFORMANCE_MODES, state='readonly')
+        # perf_combo.grid(row=0, column=1, sticky='w', padx=(10, 0), pady=5)
         
-        perf_combo = ttk.Combobox(perf_content, textvariable=self.performance_mode_var,
-                                 values=SettingsValidator.VALID_PERFORMANCE_MODES, state='readonly')
-        perf_combo.grid(row=0, column=1, sticky='w', padx=(10, 0), pady=5)
+        # # Memory limit
+        # tk.Label(perf_content, text="Memory Limit (MB):", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=1, column=0, sticky='w', pady=5)
         
-        # Memory limit
-        tk.Label(perf_content, text="Memory Limit (MB):", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=1, column=0, sticky='w', pady=5)
+        # memory_spin = tk.Spinbox(perf_content, from_=512, to=16384, increment=256,
+        #                        textvariable=self.memory_limit_var, bg=self.COLORS['bg_tertiary'],
+        #                        fg=self.COLORS['text_primary'], width=10)
+        # memory_spin.grid(row=1, column=1, sticky='w', padx=(10, 0), pady=5)
         
-        memory_spin = tk.Spinbox(perf_content, from_=512, to=16384, increment=256,
-                               textvariable=self.memory_limit_var, bg=self.COLORS['bg_tertiary'],
-                               fg=self.COLORS['text_primary'], width=10)
-        memory_spin.grid(row=1, column=1, sticky='w', padx=(10, 0), pady=5)
+        # # Logging Section
+        # log_section, log_content = self._create_section_frame(scrollable_frame, "📝 Logging")
+        # log_section.pack(fill='x')
         
-        # Logging Section
-        log_section, log_content = self._create_section_frame(scrollable_frame, "📝 Logging")
-        log_section.pack(fill='x')
+        # # Enable logging
+        # self._create_checkbox(log_content, "Enable logging",
+        #                      self.enable_logging_var).pack(anchor='w', pady=2)
         
-        # Enable logging
-        self._create_checkbox(log_content, "Enable logging",
-                             self.enable_logging_var).pack(anchor='w', pady=2)
+        # # Log level
+        # log_frame = tk.Frame(log_content, bg=self.COLORS['bg_secondary'])
+        # log_frame.pack(fill='x', pady=5)
         
-        # Log level
-        log_frame = tk.Frame(log_content, bg=self.COLORS['bg_secondary'])
-        log_frame.pack(fill='x', pady=5)
+        # tk.Label(log_frame, text="Log Level:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        tk.Label(log_frame, text="Log Level:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
-        
-        log_combo = ttk.Combobox(log_frame, textvariable=self.log_level_var,
-                                values=SettingsValidator.VALID_LOG_LEVELS, state='readonly', width=15)
-        log_combo.pack(side='left', padx=(10, 0))
+        # log_combo = ttk.Combobox(log_frame, textvariable=self.log_level_var,
+        #                         values=SettingsValidator.VALID_LOG_LEVELS, state='readonly', width=15)
+        # log_combo.pack(side='left', padx=(10, 0))
         
         # Default Directories Section
         dirs_section, dirs_content = self._create_section_frame(scrollable_frame, "📁 Default Directories")
@@ -797,13 +596,13 @@ class ComprehensiveSettingsDialog:
         tk.Label(data_dir_frame, text="Data Directory:", bg=self.COLORS['bg_secondary'], 
                 fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        data_entry = tk.Entry(data_dir_frame, textvariable=self.default_data_dir_var,
+        data_entry = tk.Entry(data_dir_frame, textvariable=self.data_dir_var,
                              bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'],
                              font=('Segoe UI', 9), width=30)
         data_entry.pack(side='left', padx=(10, 5))
         
         ttk.Button(data_dir_frame, text="Browse", 
-                  command=lambda: self._browse_directory(self.default_data_dir_var, "Select Data Directory")).pack(side='left')
+                  command=lambda: self._browse_directory(self.data_dir_var, "Select Data Directory")).pack(side='left')
         
         # Models directory
         models_dir_frame = tk.Frame(dirs_frame, bg=self.COLORS['bg_secondary'])
@@ -812,13 +611,13 @@ class ComprehensiveSettingsDialog:
         tk.Label(models_dir_frame, text="Models Directory:", bg=self.COLORS['bg_secondary'], 
                 fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        models_entry = tk.Entry(models_dir_frame, textvariable=self.default_models_dir_var,
+        models_entry = tk.Entry(models_dir_frame, textvariable=self.models_dir_var,
                                bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'],
                                font=('Segoe UI', 9), width=30)
         models_entry.pack(side='left', padx=(10, 5))
         
         ttk.Button(models_dir_frame, text="Browse", 
-                  command=lambda: self._browse_directory(self.default_models_dir_var, "Select Models Directory")).pack(side='left')
+                  command=lambda: self._browse_directory(self.models_dir_var, "Select Models Directory")).pack(side='left')
         
         # Results directory
         results_dir_frame = tk.Frame(dirs_frame, bg=self.COLORS['bg_secondary'])
@@ -827,13 +626,13 @@ class ComprehensiveSettingsDialog:
         tk.Label(results_dir_frame, text="Results Directory:", bg=self.COLORS['bg_secondary'], 
                 fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        results_entry = tk.Entry(results_dir_frame, textvariable=self.default_results_dir_var,
+        results_entry = tk.Entry(results_dir_frame, textvariable=self.results_dir_var,
                                 bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'],
                                 font=('Segoe UI', 9), width=30)
         results_entry.pack(side='left', padx=(10, 5))
         
         ttk.Button(results_dir_frame, text="Browse", 
-                  command=lambda: self._browse_directory(self.default_results_dir_var, "Select Results Directory")).pack(side='left')
+                  command=lambda: self._browse_directory(self.results_dir_var, "Select Results Directory")).pack(side='left')
         
         return tab
     
@@ -937,114 +736,114 @@ class ComprehensiveSettingsDialog:
         )
         info_label.pack(pady=(5, 0))
         
-        # Buffer settings
-        buffer_frame = tk.Frame(preview_content, bg=self.COLORS['bg_secondary'])
-        buffer_frame.pack(fill='x', pady=5)
+        # # Buffer settings
+        # buffer_frame = tk.Frame(preview_content, bg=self.COLORS['bg_secondary'])
+        # buffer_frame.pack(fill='x', pady=5)
         
-        tk.Label(buffer_frame, text="Buffer Size (frames):", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(buffer_frame, text="Buffer Size (frames):", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        buffer_spin = tk.Spinbox(buffer_frame, from_=1, to=30, textvariable=self.buffer_size_var,
-                               bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=6)
-        buffer_spin.pack(side='left', padx=(10, 0))
+        # buffer_spin = tk.Spinbox(buffer_frame, from_=1, to=30, textvariable=self.buffer_size_var,
+        #                        bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=6)
+        # buffer_spin.pack(side='left', padx=(10, 0))
         
-        # Resolution and Performance Section
-        res_section, res_content = self._create_section_frame(scrollable_frame, "🎥 Resolution & Performance")
-        res_section.pack(fill='x', pady=(0, 10))
+        # # Resolution and Performance Section
+        # res_section, res_content = self._create_section_frame(scrollable_frame, "🎥 Resolution & Performance")
+        # res_section.pack(fill='x', pady=(0, 10))
         
-        # Resolution presets and custom
-        res_preset_frame = tk.Frame(res_content, bg=self.COLORS['bg_secondary'])
-        res_preset_frame.pack(fill='x', pady=5)
+        # # Resolution presets and custom
+        # res_preset_frame = tk.Frame(res_content, bg=self.COLORS['bg_secondary'])
+        # res_preset_frame.pack(fill='x', pady=5)
         
-        tk.Label(res_preset_frame, text="Preset:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(res_preset_frame, text="Preset:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        preset_combo = ttk.Combobox(res_preset_frame, values=["720p (1280x720)", "1080p (1920x1080)", "4K (3840x2160)", "Custom"],
-                                   state='readonly', width=20)
-        preset_combo.pack(side='left', padx=(10, 0))
-        preset_combo.bind('<<ComboboxSelected>>', self._on_resolution_preset_changed)
+        # preset_combo = ttk.Combobox(res_preset_frame, values=["720p (1280x720)", "1080p (1920x1080)", "4K (3840x2160)", "Custom"],
+        #                            state='readonly', width=20)
+        # preset_combo.pack(side='left', padx=(10, 0))
+        # preset_combo.bind('<<ComboboxSelected>>', self._on_resolution_preset_changed)
         
-        # Custom resolution
-        custom_res_frame = tk.Frame(res_content, bg=self.COLORS['bg_secondary'])
-        custom_res_frame.pack(fill='x', pady=5)
+        # # Custom resolution
+        # custom_res_frame = tk.Frame(res_content, bg=self.COLORS['bg_secondary'])
+        # custom_res_frame.pack(fill='x', pady=5)
         
-        tk.Label(custom_res_frame, text="Width:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(custom_res_frame, text="Width:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        width_spin = tk.Spinbox(custom_res_frame, from_=240, to=4096, increment=80,
-                              textvariable=self.camera_width_var, bg=self.COLORS['bg_tertiary'],
-                              fg=self.COLORS['text_primary'], width=8)
-        width_spin.pack(side='left', padx=(5, 10))
+        # width_spin = tk.Spinbox(custom_res_frame, from_=240, to=4096, increment=80,
+        #                       textvariable=self.camera_width_var, bg=self.COLORS['bg_tertiary'],
+        #                       fg=self.COLORS['text_primary'], width=8)
+        # width_spin.pack(side='left', padx=(5, 10))
         
-        tk.Label(custom_res_frame, text="Height:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(custom_res_frame, text="Height:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        height_spin = tk.Spinbox(custom_res_frame, from_=240, to=4096, increment=60,
-                               textvariable=self.camera_height_var, bg=self.COLORS['bg_tertiary'],
-                               fg=self.COLORS['text_primary'], width=8)
-        height_spin.pack(side='left', padx=(5, 10))
+        # height_spin = tk.Spinbox(custom_res_frame, from_=240, to=4096, increment=60,
+        #                        textvariable=self.camera_height_var, bg=self.COLORS['bg_tertiary'],
+        #                        fg=self.COLORS['text_primary'], width=8)
+        # height_spin.pack(side='left', padx=(5, 10))
         
-        tk.Label(custom_res_frame, text="FPS:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(custom_res_frame, text="FPS:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        fps_spin = tk.Spinbox(custom_res_frame, from_=1, to=120, increment=5,
-                            textvariable=self.camera_fps_var, bg=self.COLORS['bg_tertiary'],
-                            fg=self.COLORS['text_primary'], width=6)
-        fps_spin.pack(side='left', padx=(5, 0))
+        # fps_spin = tk.Spinbox(custom_res_frame, from_=1, to=120, increment=5,
+        #                     textvariable=self.camera_fps_var, bg=self.COLORS['bg_tertiary'],
+        #                     fg=self.COLORS['text_primary'], width=6)
+        # fps_spin.pack(side='left', padx=(5, 0))
         
-        # Camera Controls Section
-        controls_section, controls_content = self._create_section_frame(scrollable_frame, "🎛️ Camera Controls")
-        controls_section.pack(fill='x', pady=(0, 10))
+        # # Camera Controls Section
+        # controls_section, controls_content = self._create_section_frame(scrollable_frame, "🎛️ Camera Controls")
+        # controls_section.pack(fill='x', pady=(0, 10))
         
-        # Auto settings
-        auto_frame = tk.Frame(controls_content, bg=self.COLORS['bg_secondary'])
-        auto_frame.pack(fill='x', pady=5)
+        # # Auto settings
+        # auto_frame = tk.Frame(controls_content, bg=self.COLORS['bg_secondary'])
+        # auto_frame.pack(fill='x', pady=5)
         
-        self._create_checkbox(auto_frame, "Auto Exposure",
-                             self.auto_exposure_var).pack(side='left', padx=(0, 20))
+        # self._create_checkbox(auto_frame, "Auto Exposure",
+        #                      self.auto_exposure_var).pack(side='left', padx=(0, 20))
         
-        self._create_checkbox(auto_frame, "Auto Focus",
-                             self.auto_focus_var).pack(side='left')
+        # self._create_checkbox(auto_frame, "Auto Focus",
+        #                      self.auto_focus_var).pack(side='left')
         
-        # Manual adjustments
-        adj_frame = tk.Frame(controls_content, bg=self.COLORS['bg_secondary'])
-        adj_frame.pack(fill='x', pady=5)
+        # # Manual adjustments
+        # adj_frame = tk.Frame(controls_content, bg=self.COLORS['bg_secondary'])
+        # adj_frame.pack(fill='x', pady=5)
         
-        # Brightness
-        brightness_frame = tk.Frame(adj_frame, bg=self.COLORS['bg_secondary'])
-        brightness_frame.pack(fill='x', pady=2)
+        # # Brightness
+        # brightness_frame = tk.Frame(adj_frame, bg=self.COLORS['bg_secondary'])
+        # brightness_frame.pack(fill='x', pady=2)
         
-        tk.Label(brightness_frame, text="Brightness:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=12, anchor='w').pack(side='left')
+        # tk.Label(brightness_frame, text="Brightness:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=12, anchor='w').pack(side='left')
         
-        brightness_scale = tk.Scale(brightness_frame, from_=-100, to=100, orient='horizontal',
-                                  variable=self.brightness_var, bg=self.COLORS['bg_secondary'],
-                                  fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
-        brightness_scale.pack(side='left', padx=(5, 0))
+        # brightness_scale = tk.Scale(brightness_frame, from_=-100, to=100, orient='horizontal',
+        #                           variable=self.brightness_var, bg=self.COLORS['bg_secondary'],
+        #                           fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
+        # brightness_scale.pack(side='left', padx=(5, 0))
         
-        # Contrast
-        contrast_frame = tk.Frame(adj_frame, bg=self.COLORS['bg_secondary'])
-        contrast_frame.pack(fill='x', pady=2)
+        # # Contrast
+        # contrast_frame = tk.Frame(adj_frame, bg=self.COLORS['bg_secondary'])
+        # contrast_frame.pack(fill='x', pady=2)
         
-        tk.Label(contrast_frame, text="Contrast:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=12, anchor='w').pack(side='left')
+        # tk.Label(contrast_frame, text="Contrast:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=12, anchor='w').pack(side='left')
         
-        contrast_scale = tk.Scale(contrast_frame, from_=-100, to=100, orient='horizontal',
-                                variable=self.contrast_var, bg=self.COLORS['bg_secondary'],
-                                fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
-        contrast_scale.pack(side='left', padx=(5, 0))
+        # contrast_scale = tk.Scale(contrast_frame, from_=-100, to=100, orient='horizontal',
+        #                         variable=self.contrast_var, bg=self.COLORS['bg_secondary'],
+        #                         fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
+        # contrast_scale.pack(side='left', padx=(5, 0))
         
-        # Saturation
-        saturation_frame = tk.Frame(adj_frame, bg=self.COLORS['bg_secondary'])
-        saturation_frame.pack(fill='x', pady=2)
+        # # Saturation
+        # saturation_frame = tk.Frame(adj_frame, bg=self.COLORS['bg_secondary'])
+        # saturation_frame.pack(fill='x', pady=2)
         
-        tk.Label(saturation_frame, text="Saturation:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=12, anchor='w').pack(side='left')
+        # tk.Label(saturation_frame, text="Saturation:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=12, anchor='w').pack(side='left')
         
-        saturation_scale = tk.Scale(saturation_frame, from_=-100, to=100, orient='horizontal',
-                                  variable=self.saturation_var, bg=self.COLORS['bg_secondary'],
-                                  fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
-        saturation_scale.pack(side='left', padx=(5, 0))
+        # saturation_scale = tk.Scale(saturation_frame, from_=-100, to=100, orient='horizontal',
+        #                           variable=self.saturation_var, bg=self.COLORS['bg_secondary'],
+        #                           fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
+        # saturation_scale.pack(side='left', padx=(5, 0))
         
         return tab
     
@@ -1096,45 +895,43 @@ class ComprehensiveSettingsDialog:
                            fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
         iou_scale.pack(side='left', padx=(5, 0))
         
-        # Image Processing Section - REMOVED as per requirements
+        # # Region of Interest Section
+        # roi_section, roi_content = self._create_section_frame(scrollable_frame, "📐 Region of Interest")
+        # roi_section.pack(fill='x', pady=(0, 10))
         
-        # Region of Interest Section
-        roi_section, roi_content = self._create_section_frame(scrollable_frame, "📐 Region of Interest")
-        roi_section.pack(fill='x', pady=(0, 10))
+        # # Enable ROI
+        # self._create_checkbox(roi_content, "Enable Region of Interest (ROI)",
+        #                      self.enable_roi_var).pack(anchor='w', pady=5)
         
-        # Enable ROI
-        self._create_checkbox(roi_content, "Enable Region of Interest (ROI)",
-                             self.enable_roi_var).pack(anchor='w', pady=5)
+        # # ROI coordinates
+        # roi_coord_frame = tk.Frame(roi_content, bg=self.COLORS['bg_secondary'])
+        # roi_coord_frame.pack(fill='x', pady=5)
         
-        # ROI coordinates
-        roi_coord_frame = tk.Frame(roi_content, bg=self.COLORS['bg_secondary'])
-        roi_coord_frame.pack(fill='x', pady=5)
+        # # X and Y
+        # tk.Label(roi_coord_frame, text="X:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=0, column=0, padx=(0, 5))
         
-        # X and Y
-        tk.Label(roi_coord_frame, text="X:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=0, column=0, padx=(0, 5))
+        # tk.Spinbox(roi_coord_frame, from_=0, to=4096, textvariable=self.roi_x_var,
+        #           bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=8).grid(row=0, column=1, padx=(0, 10))
         
-        tk.Spinbox(roi_coord_frame, from_=0, to=4096, textvariable=self.roi_x_var,
-                  bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=8).grid(row=0, column=1, padx=(0, 10))
+        # tk.Label(roi_coord_frame, text="Y:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=0, column=2, padx=(0, 5))
         
-        tk.Label(roi_coord_frame, text="Y:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=0, column=2, padx=(0, 5))
+        # tk.Spinbox(roi_coord_frame, from_=0, to=4096, textvariable=self.roi_y_var,
+        #           bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=8).grid(row=0, column=3)
         
-        tk.Spinbox(roi_coord_frame, from_=0, to=4096, textvariable=self.roi_y_var,
-                  bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=8).grid(row=0, column=3)
+        # # Width and Height
+        # tk.Label(roi_coord_frame, text="Width:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=1, column=0, padx=(0, 5), pady=(5, 0))
         
-        # Width and Height
-        tk.Label(roi_coord_frame, text="Width:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=1, column=0, padx=(0, 5), pady=(5, 0))
+        # tk.Spinbox(roi_coord_frame, from_=0, to=4096, textvariable=self.roi_width_var,
+        #           bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=8).grid(row=1, column=1, padx=(0, 10), pady=(5, 0))
         
-        tk.Spinbox(roi_coord_frame, from_=0, to=4096, textvariable=self.roi_width_var,
-                  bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=8).grid(row=1, column=1, padx=(0, 10), pady=(5, 0))
+        # tk.Label(roi_coord_frame, text="Height:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=1, column=2, padx=(0, 5), pady=(5, 0))
         
-        tk.Label(roi_coord_frame, text="Height:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).grid(row=1, column=2, padx=(0, 5), pady=(5, 0))
-        
-        tk.Spinbox(roi_coord_frame, from_=0, to=4096, textvariable=self.roi_height_var,
-                  bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=8).grid(row=1, column=3, pady=(5, 0))
+        # tk.Spinbox(roi_coord_frame, from_=0, to=4096, textvariable=self.roi_height_var,
+        #           bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=8).grid(row=1, column=3, pady=(5, 0))
         
         # Model and Export Section
         model_section, model_content = self._create_section_frame(scrollable_frame, "⚙️ Model & Export")
@@ -1172,25 +969,25 @@ class ComprehensiveSettingsDialog:
         tk.Label(export_frame, text="Export Quality: 100% (PNG format)", bg=self.COLORS['bg_secondary'], 
                 fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        # Difference Detection Section
-        diff_section, diff_content = self._create_section_frame(scrollable_frame, "🔍 Difference Detection")
-        diff_section.pack(fill='x')
+        # # Difference Detection Section
+        # diff_section, diff_content = self._create_section_frame(scrollable_frame, "🔍 Difference Detection")
+        # diff_section.pack(fill='x')
         
-        # Sensitivity
-        sens_frame = tk.Frame(diff_content, bg=self.COLORS['bg_secondary'])
-        sens_frame.pack(fill='x', pady=5)
+        # # Sensitivity
+        # sens_frame = tk.Frame(diff_content, bg=self.COLORS['bg_secondary'])
+        # sens_frame.pack(fill='x', pady=5)
         
-        tk.Label(sens_frame, text="Sensitivity:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=15, anchor='w').pack(side='left')
+        # tk.Label(sens_frame, text="Sensitivity:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=15, anchor='w').pack(side='left')
         
-        sens_scale = tk.Scale(sens_frame, from_=0.0, to=1.0, resolution=0.01, orient='horizontal',
-                            variable=self.difference_sensitivity_var, bg=self.COLORS['bg_secondary'],
-                            fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
-        sens_scale.pack(side='left', padx=(5, 0))
+        # sens_scale = tk.Scale(sens_frame, from_=0.0, to=1.0, resolution=0.01, orient='horizontal',
+        #                     variable=self.difference_sensitivity_var, bg=self.COLORS['bg_secondary'],
+        #                     fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
+        # sens_scale.pack(side='left', padx=(5, 0))
         
-        # Highlight differences
-        self._create_checkbox(diff_content, "Highlight differences automatically",
-                             self.highlight_differences_var).pack(anchor='w', pady=5)
+        # # Highlight differences
+        # self._create_checkbox(diff_content, "Highlight differences automatically",
+        #                      self.highlight_differences_var).pack(anchor='w', pady=5)
         
         return tab
     
@@ -1294,54 +1091,54 @@ class ComprehensiveSettingsDialog:
                                 fg=self.COLORS['text_primary'], width=6)
         timeout_spin.pack(side='left', padx=(10, 0))
         
-        # Chat Behavior Section
-        chat_section, chat_content = self._create_section_frame(scrollable_frame, "💬 Chat Behavior")
-        chat_section.pack(fill='x', pady=(0, 10))
+        # # Chat Behavior Section
+        # chat_section, chat_content = self._create_section_frame(scrollable_frame, "💬 Chat Behavior")
+        # chat_section.pack(fill='x', pady=(0, 10))
         
-        # Enable AI analysis
-        self._create_checkbox(chat_content, "Enable AI analysis features",
-                             self.enable_ai_var).pack(anchor='w', pady=2)
+        # # Enable AI analysis
+        # self._create_checkbox(chat_content, "Enable AI analysis features",
+        #                      self.enable_ai_var).pack(anchor='w', pady=2)
         
-        # Response format
-        format_frame = tk.Frame(chat_content, bg=self.COLORS['bg_secondary'])
-        format_frame.pack(fill='x', pady=5)
+        # # Response format
+        # format_frame = tk.Frame(chat_content, bg=self.COLORS['bg_secondary'])
+        # format_frame.pack(fill='x', pady=5)
         
-        tk.Label(format_frame, text="Response Format:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(format_frame, text="Response Format:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        response_combo = ttk.Combobox(format_frame, textvariable=self.response_format_var,
-                                     values=SettingsValidator.VALID_RESPONSE_FORMATS, state='readonly', width=15)
-        response_combo.pack(side='left', padx=(10, 0))
+        # response_combo = ttk.Combobox(format_frame, textvariable=self.response_format_var,
+        #                              values=SettingsValidator.VALID_RESPONSE_FORMATS, state='readonly', width=15)
+        # response_combo.pack(side='left', padx=(10, 0))
         
-        # Chat history limit
-        history_frame = tk.Frame(chat_content, bg=self.COLORS['bg_secondary'])
-        history_frame.pack(fill='x', pady=5)
+        # # Chat history limit
+        # history_frame = tk.Frame(chat_content, bg=self.COLORS['bg_secondary'])
+        # history_frame.pack(fill='x', pady=5)
         
-        tk.Label(history_frame, text="History Limit:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(history_frame, text="History Limit:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        history_spin = tk.Spinbox(history_frame, from_=10, to=1000, increment=10,
-                                textvariable=self.chat_history_limit_var, bg=self.COLORS['bg_tertiary'],
-                                fg=self.COLORS['text_primary'], width=8)
-        history_spin.pack(side='left', padx=(10, 0))
+        # history_spin = tk.Spinbox(history_frame, from_=10, to=1000, increment=10,
+        #                         textvariable=self.chat_history_limit_var, bg=self.COLORS['bg_tertiary'],
+        #                         fg=self.COLORS['text_primary'], width=8)
+        # history_spin.pack(side='left', padx=(10, 0))
         
-        # Auto-save and memory
-        self._create_checkbox(chat_content, "Auto-save chat history",
-                             self.chat_auto_save_var).pack(anchor='w', pady=2)
+        # # Auto-save and memory
+        # self._create_checkbox(chat_content, "Auto-save chat history",
+        #                      self.chat_auto_save_var).pack(anchor='w', pady=2)
         
-        self._create_checkbox(chat_content, "Enable conversation memory",
-                             self.conversation_memory_var).pack(anchor='w', pady=2)
+        # self._create_checkbox(chat_content, "Enable conversation memory",
+        #                      self.conversation_memory_var).pack(anchor='w', pady=2)
         
-        # Chat export format
-        export_format_frame = tk.Frame(chat_content, bg=self.COLORS['bg_secondary'])
-        export_format_frame.pack(fill='x', pady=5)
+        # # Chat export format
+        # export_format_frame = tk.Frame(chat_content, bg=self.COLORS['bg_secondary'])
+        # export_format_frame.pack(fill='x', pady=5)
         
-        tk.Label(export_format_frame, text="Export Format:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(export_format_frame, text="Export Format:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        export_format_combo = ttk.Combobox(export_format_frame, textvariable=self.chat_export_format_var,
-                                          values=SettingsValidator.VALID_CHAT_EXPORT_FORMATS, state='readonly', width=10)
-        export_format_combo.pack(side='left', padx=(10, 0))
+        # export_format_combo = ttk.Combobox(export_format_frame, textvariable=self.chat_export_format_var,
+        #                                   values=SettingsValidator.VALID_CHAT_EXPORT_FORMATS, state='readonly', width=10)
+        # export_format_combo.pack(side='left', padx=(10, 0))
         
         # Custom Persona Section
         persona_section, persona_content = self._create_section_frame(scrollable_frame, "🎭 Custom Role/Persona")
@@ -1440,33 +1237,33 @@ class ComprehensiveSettingsDialog:
         self.persona_text.bind('<KeyRelease>', lambda e: (on_persona_change(), update_char_count()))
         self.persona_text.bind('<FocusOut>', lambda e: (on_persona_change(), update_char_count()))
         
-        # Rate Limiting Section
-        rate_section, rate_content = self._create_section_frame(scrollable_frame, "⏱️ Rate Limiting")
-        rate_section.pack(fill='x', pady=(0, 10))
+        # # Rate Limiting Section
+        # rate_section, rate_content = self._create_section_frame(scrollable_frame, "⏱️ Rate Limiting")
+        # rate_section.pack(fill='x', pady=(0, 10))
         
-        # Enable rate limiting
-        self._create_checkbox(rate_content, "Enable rate limiting",
-                             self.enable_rate_limiting_var).pack(anchor='w', pady=2)
+        # # Enable rate limiting
+        # self._create_checkbox(rate_content, "Enable rate limiting",
+        #                      self.enable_rate_limiting_var).pack(anchor='w', pady=2)
         
-        # Requests per minute
-        rate_frame = tk.Frame(rate_content, bg=self.COLORS['bg_secondary'])
-        rate_frame.pack(fill='x', pady=5)
+        # # Requests per minute
+        # rate_frame = tk.Frame(rate_content, bg=self.COLORS['bg_secondary'])
+        # rate_frame.pack(fill='x', pady=5)
         
-        tk.Label(rate_frame, text="Requests/minute:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # tk.Label(rate_frame, text="Requests/minute:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        rate_spin = tk.Spinbox(rate_frame, from_=1, to=60, textvariable=self.requests_per_minute_var,
-                             bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=6)
-        rate_spin.pack(side='left', padx=(10, 20))
+        # rate_spin = tk.Spinbox(rate_frame, from_=1, to=60, textvariable=self.requests_per_minute_var,
+        #                      bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=6)
+        # rate_spin.pack(side='left', padx=(10, 20))
         
-        # Context window size
-        tk.Label(rate_frame, text="Context Window:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+        # # Context window size
+        # tk.Label(rate_frame, text="Context Window:", bg=self.COLORS['bg_secondary'], 
+        #         fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
         
-        context_spin = tk.Spinbox(rate_frame, from_=1000, to=32000, increment=1000,
-                                textvariable=self.context_window_var, bg=self.COLORS['bg_tertiary'],
-                                fg=self.COLORS['text_primary'], width=8)
-        context_spin.pack(side='left', padx=(10, 0))
+        # context_spin = tk.Spinbox(rate_frame, from_=1000, to=32000, increment=1000,
+        #                         textvariable=self.context_window_var, bg=self.COLORS['bg_tertiary'],
+        #                         fg=self.COLORS['text_primary'], width=8)
+        # context_spin.pack(side='left', padx=(10, 0))
         
         # Test Connection Section
         test_section, test_content = self._create_section_frame(scrollable_frame, "🧪 Connection Test")
@@ -1485,130 +1282,6 @@ class ComprehensiveSettingsDialog:
                                          font=('Segoe UI', 9), wraplength=500, justify='left')
         self.test_result_label.pack(anchor='w', pady=(5, 0))
         
-        return tab
-    
-    def _build_advanced_tab(self) -> tk.Frame:
-        """Build the Advanced settings tab."""
-        tab = tk.Frame(self.notebook, bg=self.COLORS['bg_primary'])
-        
-        # Scrollable frame
-        canvas = tk.Canvas(tab, bg=self.COLORS['bg_primary'], highlightthickness=0)
-        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg=self.COLORS['bg_primary'])
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Configuration Presets Section
-        preset_section, preset_content = self._create_section_frame(scrollable_frame, "🎛️ Configuration Presets")
-        preset_section.pack(fill='x', pady=(0, 10))
-        
-        # Preset selection and apply
-        preset_frame = tk.Frame(preset_content, bg=self.COLORS['bg_secondary'])
-        preset_frame.pack(fill='x', pady=5)
-        
-        tk.Label(preset_frame, text="Load Preset:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
-        
-        self.preset_var = tk.StringVar()
-        preset_combo = ttk.Combobox(preset_frame, textvariable=self.preset_var,
-                                   values=SettingsPresets.get_available_presets(), state='readonly', width=15)
-        preset_combo.pack(side='left', padx=(10, 10))
-        
-        ttk.Button(preset_frame, text="Apply Preset", command=self._apply_preset).pack(side='left')
-        
-        # Import/Export Section
-        io_section, io_content = self._create_section_frame(scrollable_frame, "📁 Import/Export")
-        io_section.pack(fill='x', pady=(0, 10))
-        
-        # Import/Export buttons
-        io_frame = tk.Frame(io_content, bg=self.COLORS['bg_secondary'])
-        io_frame.pack(fill='x', pady=5)
-        
-        ttk.Button(io_frame, text="📥 Import Settings", command=self._import_settings).pack(side='left', padx=(0, 10))
-        ttk.Button(io_frame, text="📤 Export Settings", command=self._export_settings).pack(side='left', padx=(0, 10))
-        ttk.Button(io_frame, text="🔄 Reset to Defaults", command=self._reset_to_defaults).pack(side='left')
-        
-        # Settings Search Section - REMOVED as per requirements
-        
-        # Validation Status Section - REMOVED as per requirements
-        # Backup and Recovery Section - REMOVED as per requirements
-        
-        # Memory and Performance Section
-        memory_section, memory_content = self._create_section_frame(scrollable_frame, "⚡ Memory & Performance")
-        memory_section.pack(fill='x')
-        
-        # Memory limits
-        memory_frame = tk.Frame(memory_content, bg=self.COLORS['bg_secondary'])
-        memory_frame.pack(fill='x', pady=5)
-        
-        tk.Label(memory_frame, text="Max Memory Usage (MB):", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
-        
-        memory_spin = tk.Spinbox(memory_frame, from_=512, to=16384, increment=256,
-                               textvariable=self.memory_limit_var, bg=self.COLORS['bg_tertiary'],
-                               fg=self.COLORS['text_primary'], width=8)
-        memory_spin.pack(side='left', padx=(10, 0))
-        
-        # Performance tuning options
-        perf_frame = tk.Frame(memory_content, bg=self.COLORS['bg_secondary'])
-        perf_frame.pack(fill='x', pady=5)
-        
-        tk.Label(perf_frame, text="Performance Mode:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
-        
-        perf_combo = ttk.Combobox(perf_frame, textvariable=self.performance_mode_var,
-                                 values=SettingsValidator.VALID_PERFORMANCE_MODES, state='readonly', width=15)
-        perf_combo.pack(side='left', padx=(10, 0))
-        
-        # Logging configuration 
-        log_frame = tk.Frame(memory_content, bg=self.COLORS['bg_secondary'])
-        log_frame.pack(fill='x', pady=5)
-        
-        self._create_checkbox(log_frame, "Enable detailed logging",
-                             self.enable_logging_var).pack(side='left')
-        
-        tk.Label(log_frame, text="Log Level:", bg=self.COLORS['bg_secondary'], 
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left', padx=(20, 5))
-        
-        log_combo = ttk.Combobox(log_frame, textvariable=self.log_level_var,
-                                values=SettingsValidator.VALID_LOG_LEVELS, state='readonly', width=10)
-        log_combo.pack(side='left')
-
-        # Window Management Section
-        window_section, window_content = self._create_section_frame(scrollable_frame, "🖼️ Window Management")
-        window_section.pack(fill='x', pady=(10, 0))
-
-        # Window state options
-        window_options_frame = tk.Frame(window_content, bg=self.COLORS['bg_secondary'])
-        window_options_frame.pack(fill='x', pady=5)
-
-        self._create_checkbox(window_options_frame, "Remember window state and position",
-                             self.remember_window_state_var).pack(anchor='w', pady=2)
-
-        self._create_checkbox(window_options_frame, "Start in fullscreen mode",
-                             self.startup_fullscreen_var).pack(anchor='w', pady=2)
-
-        # Auto-save settings
-        auto_save_frame = tk.Frame(window_content, bg=self.COLORS['bg_secondary'])
-        auto_save_frame.pack(fill='x', pady=5)
-
-        tk.Label(auto_save_frame, text="Auto-save interval (minutes):", bg=self.COLORS['bg_secondary'],
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
-
-        autosave_spin = tk.Spinbox(auto_save_frame, from_=1, to=60, increment=1,
-                                 textvariable=self.auto_save_interval_var, bg=self.COLORS['bg_tertiary'],
-                                 fg=self.COLORS['text_primary'], width=8)
-        autosave_spin.pack(side='left', padx=(10, 0))
-
         return tab
     
     def _build_buttons(self, parent):
@@ -1744,6 +1417,7 @@ class ComprehensiveSettingsDialog:
     def _test_api_connection(self):
         """Test the Gemini API connection."""
         api_key = self.api_key_var.get().strip()
+        model = self.gemini_model_var.get()
         
         if not api_key:
             self.test_result_var.set("❌ Please enter an API key first")
@@ -1758,15 +1432,14 @@ class ComprehensiveSettingsDialog:
         def test_worker():
             try:
                 # Create temporary service for testing
-                test_service = GeminiService(api_key)
+                test_service = GeminiService(api_key, model, timeout=5)
                 
                 # Create a simple test image
                 import numpy as np
                 test_image = np.zeros((100, 100, 3), dtype=np.uint8)
                 
                 # Test API call
-                result = test_service.analyze_single_image(
-                    test_image, 
+                result = test_service.send_message(
                     "This is a test. Please respond with 'Test successful' if you can see this."
                 )
                 
@@ -1775,7 +1448,8 @@ class ComprehensiveSettingsDialog:
                 
             except Exception as e:
                 # Update UI on main thread
-                self.dialog.after(0, lambda: self._handle_test_result(None, str(e)))
+                error_msg = str(e)
+                self.dialog.after(0, lambda: self._handle_test_result(None, error_msg))
         
         # Run test in background
         threading.Thread(target=test_worker, daemon=True).start()
@@ -1791,178 +1465,6 @@ class ComprehensiveSettingsDialog:
         else:
             self.test_result_var.set("✅ Connection successful! API key is working.")
             self.test_result_label.configure(fg=self.COLORS['success'])
-    
-    def _apply_preset(self):
-        """Apply the selected configuration preset."""
-        preset_name = self.preset_var.get()
-        if not preset_name:
-            messagebox.showwarning("Warning", "Please select a preset to apply")
-            return
-        
-        preset_settings = SettingsPresets.get_preset(preset_name)
-        if not preset_settings:
-            messagebox.showerror("Error", f"Preset '{preset_name}' not found")
-            return
-        
-        # Apply preset settings to variables
-        for key, value in preset_settings.items():
-            var_name = f"{key}_var"
-            if hasattr(self, var_name):
-                var = getattr(self, var_name)
-                var.set(value)
-        
-        self._mark_changed()
-        messagebox.showinfo("Preset Applied", f"Applied '{preset_name}' preset settings")
-    
-    def _import_settings(self):
-        """Import settings from a JSON file with validation and backup."""
-        file_path = filedialog.askopenfilename(
-            title="Import Settings",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        
-        if file_path:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    import_data = json.load(f)
-                
-                # Handle both old format (direct settings) and new format (with metadata)
-                if isinstance(import_data, dict) and "settings" in import_data:
-                    # New format with metadata
-                    imported_settings = import_data["settings"]
-                    metadata = import_data.get("metadata", {})
-                    
-                    # Show import info
-                    import_info = f"Import from: {os.path.basename(file_path)}\n"
-                    if "export_timestamp" in metadata:
-                        import_info += f"Exported: {metadata['export_timestamp']}\n"
-                    if "settings_count" in metadata:
-                        import_info += f"Settings count: {metadata['settings_count']}"
-                else:
-                    # Old format (direct settings)
-                    imported_settings = import_data
-                    import_info = f"Import from: {os.path.basename(file_path)}\nLegacy format detected"
-                
-                # Create backup before importing
-                if messagebox.askyesno("Import Settings", 
-                                     f"{import_info}\n\nThis will replace current settings. Continue?"):
-                    
-                    # Auto-backup current settings
-                    try:
-                        self._create_auto_backup("before_import")
-                    except Exception as backup_error:
-                        if not messagebox.askyesno("Backup Failed", 
-                                                  f"Failed to create backup: {backup_error}\nContinue import anyway?"):
-                            return
-                    
-                    # Validate and apply imported settings
-                    applied_count = 0
-                    errors = []
-                    
-                    for key, value in imported_settings.items():
-                        var_name = f"{key}_var"
-                        if hasattr(self, var_name):
-                            try:
-                                var = getattr(self, var_name)
-                                var.set(value)
-                                applied_count += 1
-                            except Exception as e:
-                                errors.append(f"{key}: {e}")
-                        else:
-                            errors.append(f"{key}: Setting not found")
-                    
-                    self._mark_changed()
-                    
-                    # Show results
-                    result_msg = f"Import completed\nApplied: {applied_count} settings"
-                    if errors:
-                        result_msg += f"\nErrors: {len(errors)}"
-                        if len(errors) <= 5:
-                            result_msg += "\n" + "\n".join(errors)
-                        else:
-                            result_msg += f"\nFirst 5 errors:\n" + "\n".join(errors[:5])
-                    
-                    if errors:
-                        messagebox.showwarning("Import Completed with Errors", result_msg)
-                    else:
-                        messagebox.showinfo("Import Successful", result_msg)
-                
-            except Exception as e:
-                messagebox.showerror("Import Error", f"Failed to import settings: {e}")
-    
-    def _export_settings(self):
-        """Export current settings to a JSON file with metadata."""
-        file_path = filedialog.asksaveasfilename(
-            title="Export Settings",
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-            initialfilename=f"settings_export_{time.strftime('%Y%m%d_%H%M%S')}.json"
-        )
-        
-        if file_path:
-            try:
-                # Collect all current settings
-                settings = self._collect_current_settings()
-                
-                # Add export metadata
-                export_data = {
-                    "metadata": {
-                        "export_version": "1.0",
-                        "export_timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-                        "application": "Vision Analysis System",
-                        "settings_count": len(settings)
-                    },
-                    "settings": settings
-                }
-                
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(export_data, f, indent=2, ensure_ascii=False)
-                
-                messagebox.showinfo("Export Successful", 
-                                   f"Settings exported to {os.path.basename(file_path)}\n"
-                                   f"Contains {len(settings)} settings")
-                
-            except Exception as e:
-                messagebox.showerror("Export Error", f"Failed to export settings: {e}")
-    
-    def _reset_to_defaults(self):
-        """Reset all settings to their default values."""
-        if messagebox.askyesno("Reset Settings", "Are you sure you want to reset all settings to defaults?"):
-            # Load defaults
-            from ...config.defaults import DEFAULT_CONFIG
-            
-            # Apply defaults to variables
-            for key, value in DEFAULT_CONFIG.items():
-                var_name = f"{key}_var"
-                if hasattr(self, var_name):
-                    var = getattr(self, var_name)
-                    var.set(value)
-            
-            self._mark_changed()
-            messagebox.showinfo("Reset Complete", "All settings have been reset to defaults")
-    
-    def _on_search_changed(self, event=None):
-        """Handle search text changes."""
-        search_term = self.search_var.get().lower()
-        
-        if not search_term:
-            # Show all tabs
-            for i in range(self.notebook.index("end")):
-                self.notebook.tab(i, state="normal")
-        else:
-            # Hide tabs that don't match search
-            tab_names = ["general", "webcam", "analysis", "chatbot", "advanced"]
-            for i, tab_name in enumerate(tab_names):
-                if search_term in tab_name.lower():
-                    self.notebook.tab(i, state="normal")
-                else:
-                    self.notebook.tab(i, state="disabled")
-    
-    def _clear_search(self):
-        """Clear the search field and show all tabs."""
-        self.search_var.set("")
-        for i in range(self.notebook.index("end")):
-            self.notebook.tab(i, state="normal")
     
     def _validate_all_settings(self):
         """Validate all current settings and display results."""
@@ -2002,158 +1504,6 @@ class ComprehensiveSettingsDialog:
         else:
             self.validation_status_label.configure(text="All settings valid", fg=self.COLORS['success'])
     
-    def _create_backup(self):
-        """Create a manual backup of current settings."""
-        try:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            backup_filename = f"manual_backup_{timestamp}.json"
-            
-            # Create backups directory if it doesn't exist
-            backup_dir = "backups"
-            os.makedirs(backup_dir, exist_ok=True)
-            
-            backup_path = os.path.join(backup_dir, backup_filename)
-            
-            # Create backup with metadata
-            self._save_backup_file(backup_path, "manual")
-            
-            messagebox.showinfo("Backup Created", f"Settings backed up to {backup_filename}")
-            
-        except Exception as e:
-            messagebox.showerror("Backup Error", f"Failed to create backup: {e}")
-    
-    def _create_auto_backup(self, reason: str = "auto") -> str:
-        """Create an automatic backup and return the file path."""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"{reason}_backup_{timestamp}.json"
-        
-        # Create backups directory if it doesn't exist
-        backup_dir = "backups"
-        os.makedirs(backup_dir, exist_ok=True)
-        
-        backup_path = os.path.join(backup_dir, backup_filename)
-        
-        # Create backup with metadata
-        self._save_backup_file(backup_path, reason)
-        
-        return backup_path
-    
-    def _save_backup_file(self, file_path: str, reason: str):
-        """Save a backup file with metadata."""
-        settings = self._collect_current_settings()
-        
-        backup_data = {
-            "metadata": {
-                "backup_version": "1.0",
-                "backup_timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-                "backup_reason": reason,
-                "application": "Vision Analysis System",
-                "settings_count": len(settings)
-            },
-            "settings": settings
-        }
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(backup_data, f, indent=2, ensure_ascii=False)
-    
-    def _restore_backup(self):
-        """Restore settings from a backup file with validation."""
-        backup_dir = "backups"
-        if not os.path.exists(backup_dir):
-            messagebox.showwarning("No Backups", "No backup directory found")
-            return
-        
-        file_path = filedialog.askopenfilename(
-            title="Restore Backup",
-            initialdir=backup_dir,
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        
-        if file_path:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    backup_data = json.load(f)
-                
-                # Handle both old and new backup formats
-                if isinstance(backup_data, dict) and "settings" in backup_data:
-                    # New format with metadata
-                    backup_settings = backup_data["settings"]
-                    metadata = backup_data.get("metadata", {})
-                    
-                    # Show backup info
-                    backup_info = f"Restore from: {os.path.basename(file_path)}\n"
-                    if "backup_timestamp" in metadata:
-                        backup_info += f"Created: {metadata['backup_timestamp']}\n"
-                    if "backup_reason" in metadata:
-                        backup_info += f"Reason: {metadata['backup_reason']}\n"
-                    if "settings_count" in metadata:
-                        backup_info += f"Settings: {metadata['settings_count']}"
-                else:
-                    # Old format (direct settings)
-                    backup_settings = backup_data
-                    backup_info = f"Restore from: {os.path.basename(file_path)}\nLegacy backup format"
-                
-                # Confirm restore
-                if messagebox.askyesno("Restore Backup", 
-                                     f"{backup_info}\n\nThis will replace all current settings. Continue?"):
-                    
-                    # Create safety backup before restoring
-                    try:
-                        safety_backup = self._create_auto_backup("before_restore")
-                        print(f"Safety backup created: {safety_backup}")
-                    except Exception as backup_error:
-                        if not messagebox.askyesno("Safety Backup Failed", 
-                                                  f"Failed to create safety backup: {backup_error}\nContinue restore anyway?"):
-                            return
-                    
-                    # Apply backup settings
-                    applied_count = 0
-                    errors = []
-                    
-                    for key, value in backup_settings.items():
-                        var_name = f"{key}_var"
-                        if hasattr(self, var_name):
-                            try:
-                                var = getattr(self, var_name)
-                                var.set(value)
-                                applied_count += 1
-                            except Exception as e:
-                                errors.append(f"{key}: {e}")
-                        else:
-                            errors.append(f"{key}: Setting not found")
-                    
-                    self._mark_changed()
-                    
-                    # Show results
-                    result_msg = f"Restore completed\nApplied: {applied_count} settings"
-                    if errors:
-                        result_msg += f"\nErrors: {len(errors)}"
-                        if len(errors) <= 3:
-                            result_msg += "\n" + "\n".join(errors)
-                    
-                    if errors:
-                        messagebox.showwarning("Restore Completed with Errors", result_msg)
-                    else:
-                        messagebox.showinfo("Restore Complete", result_msg)
-                
-            except Exception as e:
-                messagebox.showerror("Restore Error", f"Failed to restore backup: {e}")
-    
-    def _manage_backups(self):
-        """Open backup management dialog."""
-        # This would open a separate dialog to manage backup files
-        # For now, just show info about backups directory
-        backup_dir = "backups"
-        if os.path.exists(backup_dir):
-            backups = [f for f in os.listdir(backup_dir) if f.endswith('.json')]
-            if backups:
-                backup_list = "\n".join(backups)
-                messagebox.showinfo("Available Backups", f"Backup files in {backup_dir}:\n\n{backup_list}")
-            else:
-                messagebox.showinfo("No Backups", f"No backup files found in {backup_dir}")
-        else:
-            messagebox.showinfo("No Backup Directory", "No backups have been created yet")
-    
     def _collect_current_settings(self) -> Dict[str, Any]:
         """Collect all current settings from the UI variables.
         
@@ -2167,50 +1517,22 @@ class ComprehensiveSettingsDialog:
             settings = {}
             
             # General settings
-            settings['app_theme'] = self.theme_var.get()
             settings['language'] = self.language_var.get()
-            settings['auto_save_config'] = self.auto_save_var.get()
-            settings['debug'] = self.debug_var.get()
-            settings['startup_fullscreen'] = self.startup_fullscreen_var.get()
-            settings['remember_window_state'] = self.remember_window_state_var.get()
-            settings['performance_mode'] = self.performance_mode_var.get()
-            settings['max_memory_usage_mb'] = self.memory_limit_var.get()
-            settings['enable_logging'] = self.enable_logging_var.get()
-            settings['log_level'] = self.log_level_var.get()
-            settings['auto_save_interval_minutes'] = self.auto_save_interval_var.get()
-            settings['default_data_dir'] = self.default_data_dir_var.get()
-            settings['default_models_dir'] = self.default_models_dir_var.get()
-            settings['default_results_dir'] = self.default_results_dir_var.get()
+            settings['data_dir'] = self.data_dir_var.get()
+            settings['models_dir'] = self.models_dir_var.get()
+            settings['results_dir'] = self.results_dir_var.get()
             
             # Webcam settings
             settings['last_webcam_index'] = self.camera_index_var.get()
             settings['camera_width'] = self.camera_width_var.get()
             settings['camera_height'] = self.camera_height_var.get()
             settings['camera_fps'] = self.camera_fps_var.get()
-            settings['camera_auto_exposure'] = self.auto_exposure_var.get()
-            settings['camera_auto_focus'] = self.auto_focus_var.get()
-            settings['camera_brightness'] = self.brightness_var.get()
-            settings['camera_contrast'] = self.contrast_var.get()
-            settings['camera_saturation'] = self.saturation_var.get()
-            settings['camera_recording_format'] = self.recording_format_var.get()
-            settings['camera_buffer_size'] = self.buffer_size_var.get()
-            settings['camera_preview_enabled'] = self.preview_enabled_var.get()
             settings['camera_device_name'] = self.camera_device_name_var.get()
             
             # Image Analysis settings
             settings['detection_confidence_threshold'] = self.confidence_threshold_var.get()
             settings['detection_iou_threshold'] = self.iou_threshold_var.get()
-            settings['enable_roi'] = self.enable_roi_var.get()
-            settings['roi_x'] = self.roi_x_var.get()
-            settings['roi_y'] = self.roi_y_var.get()
-            settings['roi_width'] = self.roi_width_var.get()
-            settings['roi_height'] = self.roi_height_var.get()
             settings['preferred_model'] = self.preferred_model_var.get()
-            settings['export_quality'] = self.export_quality_var.get()
-            settings['difference_sensitivity'] = self.difference_sensitivity_var.get()
-            settings['highlight_differences'] = self.highlight_differences_var.get()
-            settings['reference_image_path'] = self.reference_image_path_var.get()
-            settings['analysis_history_days'] = self.analysis_history_days_var.get()
             settings['export_include_metadata'] = self.export_metadata_var.get()
             
             # Chatbot settings
@@ -2219,15 +1541,6 @@ class ComprehensiveSettingsDialog:
             settings['gemini_timeout'] = self.timeout_var.get()
             settings['gemini_temperature'] = self.temperature_var.get()
             settings['gemini_max_tokens'] = self.max_tokens_var.get()
-            settings['enable_ai_analysis'] = self.enable_ai_var.get()
-            settings['chat_history_limit'] = self.chat_history_limit_var.get()
-            settings['chat_auto_save'] = self.chat_auto_save_var.get()
-            settings['response_format'] = self.response_format_var.get()
-            settings['enable_rate_limiting'] = self.enable_rate_limiting_var.get()
-            settings['requests_per_minute'] = self.requests_per_minute_var.get()
-            settings['context_window_size'] = self.context_window_var.get()
-            settings['enable_conversation_memory'] = self.conversation_memory_var.get()
-            settings['chat_export_format'] = self.chat_export_format_var.get()
             settings['chatbot_persona'] = self.chatbot_persona_var.get()
             
             # Validate collected settings before returning
@@ -2240,11 +1553,6 @@ class ComprehensiveSettingsDialog:
             logger.error(f"Failed to collect settings from UI: {e}")
             raise Exception(f"Settings collection failed: {e}") from e
     
-    def _mark_changed(self):
-        """Mark that changes have been made and enable Apply button."""
-        self._changes_made = True
-        self._mark_as_changed()  # Use the new comprehensive change tracking
-    
     def _validate_collected_settings(self, settings: Dict[str, Any]) -> None:
         """Validate collected settings for basic consistency and completeness.
         
@@ -2255,7 +1563,7 @@ class ComprehensiveSettingsDialog:
             ValueError: If settings are invalid or incomplete.
         """
         required_keys = [
-            'app_theme', 'language', 'auto_save_config', 'debug',
+            'language',
             'last_webcam_index', 'camera_width', 'camera_height', 'camera_fps',
             'detection_confidence_threshold', 'detection_iou_threshold',
             'gemini_api_key', 'gemini_model'
@@ -2275,40 +1583,6 @@ class ComprehensiveSettingsDialog:
         if settings.get('camera_width', 0) <= 0 or settings.get('camera_height', 0) <= 0:
             raise ValueError("Camera dimensions must be positive")
     
-    def _create_settings_backup(self) -> str:
-        """Create a backup of current settings before applying changes.
-        
-        Returns:
-            str: Path to the backup file created.
-            
-        Raises:
-            OSError: If backup creation fails.
-        """
-        try:
-            backup_dir = os.path.join(os.getcwd(), 'data', 'backups')
-            os.makedirs(backup_dir, exist_ok=True)
-            
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            backup_filename = f"config_backup_{timestamp}.json"
-            backup_path = os.path.join(backup_dir, backup_filename)
-            
-            # Use the config object's to_dict method for consistency
-            backup_data = self.config.to_dict() if hasattr(self.config, 'to_dict') else asdict(self.config)
-            
-            # Include extra settings
-            if hasattr(self.config, 'extra') and self.config.extra:
-                backup_data.update(self.config.extra)
-            
-            with open(backup_path, 'w', encoding='utf-8') as f:
-                json.dump(backup_data, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"Settings backup created: {backup_path}")
-            return backup_path
-            
-        except Exception as e:
-            logger.error(f"Failed to create settings backup: {e}")
-            raise OSError(f"Backup creation failed: {e}") from e
-    
     def _apply_settings_immediately(self, settings: Dict[str, Any]) -> None:
         """Apply settings to running application immediately without requiring restart.
         
@@ -2316,21 +1590,6 @@ class ComprehensiveSettingsDialog:
             settings: Dictionary of settings to apply
         """
         try:
-            # Apply theme changes immediately if theme changed
-            if 'app_theme' in settings:
-                new_theme = settings['app_theme']
-                original_theme = self.original_values.get('app_theme', 'Dark')
-                
-                if new_theme != original_theme:
-                    logger.info(f"Applying theme change immediately: {original_theme} -> {new_theme}")
-                    self._update_dialog_theme(new_theme)
-                    
-                    # Apply theme to main window if available
-                    main_window = self.services.get('main_window')
-                    if main_window and hasattr(main_window, 'apply_theme'):
-                        main_window.apply_theme(new_theme)
-                        logger.info(f"Applied theme {new_theme} to main window")
-            
             # Apply webcam settings immediately if they changed
             webcam_settings = ['last_webcam_index', 'camera_width', 'camera_height', 
                               'camera_fps', 'camera_brightness', 'camera_contrast', 
@@ -2368,65 +1627,6 @@ class ComprehensiveSettingsDialog:
         except Exception as e:
             logger.error(f"Error applying settings immediately: {e}", exc_info=True)
             # Don't fail the entire operation, just log the error
-    
-    def _update_dialog_theme(self, theme: str) -> None:
-        """Update dialog appearance based on theme immediately.
-        
-        Args:
-            theme: Theme name ('Dark', 'Light', 'Auto')
-        """
-        try:
-            if theme == "Light":
-                self.COLORS.update({
-                    'bg_primary': '#ffffff',
-                    'bg_secondary': '#f5f5f5',
-                    'bg_tertiary': '#eeeeee',
-                    'text_primary': '#000000',
-                    'text_secondary': '#333333',
-                    'text_muted': '#666666',
-                    'border': '#cccccc',
-                })
-            else:  # Dark theme (default)
-                self.COLORS.update({
-                    'bg_primary': '#1e1e1e',
-                    'bg_secondary': '#2d2d2d',
-                    'bg_tertiary': '#3c3c3c',
-                    'text_primary': '#ffffff',
-                    'text_secondary': '#cccccc',
-                    'text_muted': '#999999',
-                    'border': '#404040',
-                })
-            
-            # Update dialog window colors
-            self.dialog.configure(bg=self.COLORS['bg_primary'])
-            
-            # Update all widget colors (this is a simplified implementation)
-            # In a full implementation, you would recursively update all widgets
-            self._refresh_widget_colors()
-            
-            logger.info(f"Dialog theme updated to {theme}")
-            
-        except Exception as e:
-            logger.error(f"Failed to update dialog theme: {e}")
-    
-    def _refresh_widget_colors(self) -> None:
-        """Refresh all widget colors to match current theme."""
-        # This is a simplified implementation
-        # In practice, you would need to traverse the widget tree and update colors
-        try:
-            # Update persona text widget if it exists
-            if hasattr(self, 'persona_text'):
-                self.persona_text.configure(
-                    bg=self.COLORS['bg_tertiary'],
-                    fg=self.COLORS['text_primary'],
-                    insertbackground=self.COLORS['text_primary'],
-                    selectbackground=self.COLORS['accent_primary']
-                )
-                
-            logger.debug("Widget colors refreshed")
-            
-        except Exception as e:
-            logger.error(f"Error refreshing widget colors: {e}")
     
     def _apply_webcam_changes_immediately(self, webcam_service, settings: Dict[str, Any]) -> None:
         """Apply webcam settings to service immediately.
@@ -2548,22 +1748,8 @@ class ComprehensiveSettingsDialog:
         Returns:
             bool: True if settings were successfully applied and saved, False otherwise.
         """
-        backup_path = None
-        
         try:
             logger.info("Starting settings application process")
-            
-            # Create backup before making changes
-            try:
-                backup_path = self._create_settings_backup()
-            except OSError as e:
-                logger.warning(f"Could not create backup: {e}")
-                # Continue without backup if user chooses to
-                if not messagebox.askyesno(
-                    "Backup Warning", 
-                    f"Could not create settings backup: {e}\n\nContinue without backup?"
-                ):
-                    return False
             
             # Collect all settings
             settings = self._collect_current_settings()
@@ -2583,6 +1769,7 @@ class ComprehensiveSettingsDialog:
             
             # Apply validated settings to config object
             config_updated = False
+            self.config = {}
             for key, value in settings.items():
                 # Apply corrections if any
                 if key in validation_results and validation_results[key].corrected_value is not None:
@@ -2598,15 +1785,9 @@ class ComprehensiveSettingsDialog:
                         logger.debug(f"Updated config.{key}: {old_value} -> {value}")
                 else:
                     # Store in extra for unknown keys
-                    if key not in self.config.extra or self.config.extra[key] != value:
-                        self.config.extra[key] = value
-                        config_updated = True
-                        logger.debug(f"Set extra config.{key}: {value}")
-            
-            # Force export quality to 100% for best image quality
-            if hasattr(self.config, 'export_quality') and self.config.export_quality != 100:
-                self.config.export_quality = 100
-                logger.info("Forced export quality to 100% for optimal image quality")
+                    self.config[key] = value
+                    config_updated = True
+                    logger.debug(f"Set extra config.{key}: {value}")
             
             if not config_updated:
                 logger.info("No configuration changes detected")
@@ -2647,13 +1828,6 @@ class ComprehensiveSettingsDialog:
                 fg=self.COLORS['success']
             )
             
-            # Clean up old backups (keep only last 10)
-            try:
-                if backup_path:
-                    self._cleanup_old_backups(os.path.dirname(backup_path))
-            except Exception as e:
-                logger.warning(f"Could not clean up old backups: {e}")
-            
             logger.info("Settings application completed successfully")
             return True
             
@@ -2662,87 +1836,7 @@ class ComprehensiveSettingsDialog:
             logger.error(error_msg, exc_info=True)
             messagebox.showerror("Settings Error", error_msg)
             
-            # If we have a backup, offer to restore
-            if backup_path and os.path.exists(backup_path):
-                if messagebox.askyesno(
-                    "Restore Backup?",
-                    "Settings application failed. Would you like to restore the backup?"
-                ):
-                    try:
-                        self._restore_backup(backup_path)
-                    except Exception as restore_error:
-                        logger.error(f"Failed to restore backup: {restore_error}")
-                        messagebox.showerror("Restore Failed", f"Could not restore backup: {restore_error}")
-            
             return False
-    
-    def _cleanup_old_backups(self, backup_dir: str, keep_count: int = 10) -> None:
-        """Clean up old backup files, keeping only the most recent ones.
-        
-        Args:
-            backup_dir: Directory containing backup files.
-            keep_count: Number of recent backups to keep.
-        """
-        try:
-            if not os.path.exists(backup_dir):
-                return
-            
-            backup_files = [
-                os.path.join(backup_dir, f) for f in os.listdir(backup_dir)
-                if f.startswith('config_backup_') and f.endswith('.json')
-            ]
-            
-            if len(backup_files) <= keep_count:
-                return
-            
-            # Sort by modification time (newest first)
-            backup_files.sort(key=os.path.getmtime, reverse=True)
-            
-            # Remove old backups
-            for old_backup in backup_files[keep_count:]:
-                try:
-                    os.remove(old_backup)
-                    logger.debug(f"Removed old backup: {old_backup}")
-                except OSError as e:
-                    logger.warning(f"Could not remove old backup {old_backup}: {e}")
-                    
-        except Exception as e:
-            logger.warning(f"Error during backup cleanup: {e}")
-    
-    def _restore_backup(self, backup_path: str) -> None:
-        """Restore settings from a backup file.
-        
-        Args:
-            backup_path: Path to the backup file to restore.
-            
-        Raises:
-            Exception: If backup restoration fails.
-        """
-        try:
-            with open(backup_path, 'r', encoding='utf-8') as f:
-                backup_settings = json.load(f)
-            
-            # Apply backup settings to config
-            for key, value in backup_settings.items():
-                if hasattr(self.config, key):
-                    setattr(self.config, key, value)
-                else:
-                    self.config.extra[key] = value
-            
-            # Save restored settings
-            success = self.settings_manager.save_settings(self.config)
-            if not success:
-                raise Exception("Failed to save restored settings")
-            
-            # Reload UI with restored settings
-            self._load_current_settings()
-            
-            logger.info(f"Successfully restored settings from backup: {backup_path}")
-            messagebox.showinfo("Backup Restored", "Settings have been restored from backup.")
-            
-        except Exception as e:
-            logger.error(f"Failed to restore backup {backup_path}: {e}")
-            raise Exception(f"Backup restoration failed: {e}") from e
     
     def _on_apply(self) -> None:
         """Handle Apply button click with enhanced user feedback and validation."""
@@ -2969,14 +2063,12 @@ class ComprehensiveSettingsDialog:
         directory = filedialog.askdirectory(title=title, initialdir=var.get() if var.get() else ".")
         if directory:
             var.set(directory)
-            self._mark_changed()
     
     def _browse_file(self, var: tk.StringVar, title: str, filetypes: list):
         """Browse for a file and update the variable."""
         filename = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=os.path.dirname(var.get()) if var.get() else ".")
         if filename:
             var.set(filename)
-            self._mark_changed()
     
     def _on_cancel(self) -> None:
         """Handle Cancel button click with improved user experience."""
@@ -2984,30 +2076,7 @@ class ComprehensiveSettingsDialog:
         if self._preview_running:
             self._stop_test()
 
-        # Handle unsaved changes with clear options
-        if self._changes_made:
-            # Create custom dialog for better UX
-            result = self._show_unsaved_changes_dialog()
-
-            if result == "save":
-                # Try to save changes
-                if self._apply_changes():
-                    self._show_status_message("Settings saved!", "success", duration=800)
-                    self.dialog.after(1000, self._close_dialog)
-                else:
-                    # Don't close if save failed
-                    self._show_status_message("Please fix errors before closing", "warning")
-                    return
-            elif result == "discard":
-                # User chose to discard changes
-                logger.info("User discarded settings changes")
-                self._close_dialog()
-            else:  # result == "cancel" or dialog was closed
-                # User wants to continue editing
-                return
-        else:
-            # No changes, close immediately
-            self._close_dialog()
+        self._close_dialog()
 
     def _close_dialog(self) -> None:
         """Safely close the dialog with proper cleanup."""
@@ -3107,83 +2176,6 @@ class ComprehensiveSettingsDialog:
                 self.status_frame.pack_forget()
         except Exception as e:
             logger.error(f"Error hiding status message: {e}")
-
-    def _show_unsaved_changes_dialog(self) -> str:
-        """Show enhanced dialog for unsaved changes with clear options."""
-        try:
-            # Custom dialog with better UX than messagebox
-            from tkinter import simpledialog
-
-            dialog = tk.Toplevel(self.dialog)
-            dialog.title("Unsaved Changes")
-            dialog.geometry("400x150")
-            dialog.configure(bg=self.COLORS['bg_primary'])
-            dialog.transient(self.dialog)
-            dialog.grab_set()
-
-            # Center on parent
-            dialog.update_idletasks()
-            x = self.dialog.winfo_rootx() + (self.dialog.winfo_width() // 2) - (dialog.winfo_width() // 2)
-            y = self.dialog.winfo_rooty() + (self.dialog.winfo_height() // 2) - (dialog.winfo_height() // 2)
-            dialog.geometry(f"+{x}+{y}")
-
-            result = {"value": "cancel"}
-
-            # Message
-            message_frame = tk.Frame(dialog, bg=self.COLORS['bg_primary'])
-            message_frame.pack(fill='x', expand=True, padx=20, pady=20)
-
-            icon_label = tk.Label(message_frame, text="⚠️", bg=self.COLORS['bg_primary'],
-                                fg=self.COLORS['warning'], font=('Segoe UI', 16))
-            icon_label.pack(side='left', padx=(0, 10))
-
-            text_label = tk.Label(message_frame,
-                                text="You have unsaved changes.\nWhat would you like to do?",
-                                bg=self.COLORS['bg_primary'], fg=self.COLORS['text_primary'],
-                                font=('Segoe UI', 10), justify='left')
-            text_label.pack(side='left')
-
-            # Buttons
-            button_frame = tk.Frame(dialog, bg=self.COLORS['bg_primary'])
-            button_frame.pack(fill='x', padx=20, pady=(0, 20))
-
-            def set_result(value):
-                result["value"] = value
-                dialog.destroy()
-
-            save_btn = tk.Button(button_frame, text="Save Changes",
-                               command=lambda: set_result("save"),
-                               bg=self.COLORS['success'], fg='white', relief='flat',
-                               font=('Segoe UI', 9), pady=8, padx=15)
-            save_btn.pack(side='right', padx=(5, 0))
-
-            discard_btn = tk.Button(button_frame, text="Discard Changes",
-                                  command=lambda: set_result("discard"),
-                                  bg=self.COLORS['error'], fg='white', relief='flat',
-                                  font=('Segoe UI', 9), pady=8, padx=15)
-            discard_btn.pack(side='right', padx=(5, 0))
-
-            cancel_btn = tk.Button(button_frame, text="Continue Editing",
-                                 command=lambda: set_result("cancel"),
-                                 bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'],
-                                 relief='flat', font=('Segoe UI', 9), pady=8, padx=15)
-            cancel_btn.pack(side='right', padx=(5, 0))
-
-            # Wait for dialog
-            dialog.wait_window()
-            return result["value"]
-
-        except Exception as e:
-            logger.error(f"Error showing unsaved changes dialog: {e}")
-            # Fallback to standard messagebox
-            result = messagebox.askyesnocancel("Unsaved Changes",
-                                              "You have unsaved changes. Save before closing?")
-            if result is True:
-                return "save"
-            elif result is False:
-                return "discard"
-            else:
-                return "cancel"
 
     def _update_original_values(self) -> None:
         """Update original values after successful settings application."""

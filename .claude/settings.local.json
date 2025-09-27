@@ -9,7 +9,8 @@
       "Bash(tree:*)",
       "Bash(py:*)",
       "Bash(where python)",
-      "Bash(..venvScriptspython.exe debug_config.py)"
+      "Bash(..venvScriptspython.exe debug_config.py)",
+      "Bash(..venvScriptspython.exe -c \"from app.ui.modern_main_window import ModernMainWindow; print(''Import successful'')\")"
     ],
     "deny": [],
     "ask": []

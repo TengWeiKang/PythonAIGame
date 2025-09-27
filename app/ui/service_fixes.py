@@ -209,13 +209,6 @@ def safe_cleanup_destructor(self):
         self: Instance being destroyed
     """
     try:
-        # Safe performance monitoring stop
-        if hasattr(self, 'stop_performance_monitoring'):
-            try:
-                self.stop_performance_monitoring()
-            except Exception as e:
-                logger.debug(f"Error stopping performance monitoring: {e}")
-
         # Safe streaming stop
         if hasattr(self, '_is_streaming'):
             self._is_streaming = False

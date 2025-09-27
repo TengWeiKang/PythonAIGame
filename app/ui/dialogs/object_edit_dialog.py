@@ -322,47 +322,101 @@ class ObjectEditDialog:
     def _display_image_on_canvas(self, canvas: tk.Canvas, image: np.ndarray) -> None:
         """Display an image on the specified canvas."""
         try:
-            # Convert BGR to RGB
-            if len(image.shape) == 3:
+            if image is None or image.size == 0:
+                print("Error: Invalid or empty image provided")
+                return
+
+            # Convert BGR to RGB if needed
+            if len(image.shape) == 3 and image.shape[2] == 3:
+                # Assume BGR format from OpenCV
                 rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            elif len(image.shape) == 3 and image.shape[2] == 4:
+                # BGRA format
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
             else:
+                # Grayscale or already RGB
                 rgb_image = image
-            
-            # Get canvas dimensions
-            canvas.update_idletasks()
+
+            # Force canvas update and get dimensions
+            canvas.update()
+            self.window.update_idletasks()
+
             canvas_width = canvas.winfo_width()
             canvas_height = canvas.winfo_height()
-            
+
+            # Use reasonable defaults if canvas dimensions are not available
             if canvas_width <= 1 or canvas_height <= 1:
                 canvas_width, canvas_height = 300, 200
-            
-            # Calculate scaling
+                # Schedule a retry after canvas is properly sized
+                self.window.after(100, lambda: self._display_image_on_canvas(canvas, image))
+                return
+
+            # Calculate scaling to fit canvas while maintaining aspect ratio
             img_height, img_width = rgb_image.shape[:2]
-            scale = min(canvas_width / img_width, canvas_height / img_height)
-            
-            new_width = int(img_width * scale)
-            new_height = int(img_height * scale)
-            
-            if new_width > 0 and new_height > 0:
-                # Resize image
-                resized_image = cv2.resize(rgb_image, (new_width, new_height))
-                
-                # Convert to PhotoImage
-                pil_image = Image.fromarray(resized_image)
-                photo = ImageTk.PhotoImage(pil_image)
-                
-                # Display on canvas
-                canvas.delete("all")
-                canvas.create_image(
-                    canvas_width // 2,
-                    canvas_height // 2,
-                    anchor="center",
-                    image=photo
-                )
-                canvas.image = photo  # Keep reference
-        
+
+            if img_width <= 0 or img_height <= 0:
+                print("Error: Invalid image dimensions")
+                return
+
+            # Add some padding to prevent image from touching canvas edges
+            padding = 10
+            available_width = canvas_width - (2 * padding)
+            available_height = canvas_height - (2 * padding)
+
+            scale = min(available_width / img_width, available_height / img_height)
+            scale = min(scale, 1.0)  # Don't upscale images
+
+            new_width = max(1, int(img_width * scale))
+            new_height = max(1, int(img_height * scale))
+
+            # Resize image
+            resized_image = cv2.resize(rgb_image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+            # Convert to PIL Image and then to PhotoImage
+            pil_image = Image.fromarray(resized_image)
+            photo = ImageTk.PhotoImage(pil_image)
+
+            # Clear canvas and display image
+            canvas.delete("all")
+
+            # Center the image on canvas
+            x_center = canvas_width // 2
+            y_center = canvas_height // 2
+
+            canvas.create_image(
+                x_center,
+                y_center,
+                anchor="center",
+                image=photo
+            )
+
+            # CRITICAL: Store reference to prevent garbage collection
+            canvas.image = photo
+
+            # Add image info text
+            info_text = f"Size: {img_width}x{img_height} px"
+            canvas.create_text(
+                padding,
+                padding,
+                anchor="nw",
+                text=info_text,
+                fill="white",
+                font=("Arial", 9)
+            )
+
         except Exception as e:
             print(f"Error displaying image: {e}")
+            # Show error message on canvas
+            canvas.delete("all")
+            canvas.create_text(
+                canvas.winfo_width() // 2 if canvas.winfo_width() > 1 else 150,
+                canvas.winfo_height() // 2 if canvas.winfo_height() > 1 else 100,
+                anchor="center",
+                text=f"Error loading image:\n{str(e)}",
+                fill="red",
+                font=("Arial", 10),
+                justify="center"
+            )
     
     def _load_custom_metadata(self) -> None:
         """Load custom metadata into the listbox."""

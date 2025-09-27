@@ -43,7 +43,8 @@ class SettingsValidator:
     VALID_CHAT_EXPORT_FORMATS = ["JSON", "TXT", "CSV"]
     
     # Gemini models
-    VALID_GEMINI_MODELS = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
+    # VALID_GEMINI_MODELS = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
+    VALID_GEMINI_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
     
     # Model sizes
     VALID_MODEL_SIZES = [
@@ -227,17 +228,9 @@ class SettingsValidator:
         results = {}
         
         # General Application Settings
-        if "app_theme" in config_dict:
-            results["app_theme"] = SettingsValidator.validate_theme(config_dict["app_theme"])
-        
         if "language" in config_dict:
             results["language"] = SettingsValidator.validate_language(config_dict["language"])
-        
-        if "auto_save_config" in config_dict:
-            results["auto_save_config"] = SettingsValidator.validate_boolean(
-                config_dict["auto_save_config"], "Auto-save config"
-            )
-        
+                
         if "startup_fullscreen" in config_dict:
             results["startup_fullscreen"] = SettingsValidator.validate_boolean(
                 config_dict["startup_fullscreen"], "Startup fullscreen"

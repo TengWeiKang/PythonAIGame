@@ -20,12 +20,8 @@ from .env_config import load_environment_config, EnvironmentConfig, EnvironmentE
 class Config:
     # Legacy/core settings
     python_version: str = DEFAULT_CONFIG["python_version"]
-    img_size: int = DEFAULT_CONFIG["img_size"]
     target_fps: int = DEFAULT_CONFIG["target_fps"]
     iou_match_threshold: float = DEFAULT_CONFIG["iou_match_threshold"]
-    master_tolerance_px: int = DEFAULT_CONFIG["master_tolerance_px"]
-    angle_tolerance_deg: int = DEFAULT_CONFIG["angle_tolerance_deg"]
-    use_gpu: bool = DEFAULT_CONFIG["use_gpu"]
     data_dir: str = DEFAULT_CONFIG["data_dir"]
     models_dir: str = DEFAULT_CONFIG["models_dir"]
     master_dir: str = DEFAULT_CONFIG["master_dir"]
@@ -38,45 +34,21 @@ class Config:
     model_size: str = DEFAULT_CONFIG["model_size"]
     train_epochs: int = DEFAULT_CONFIG["train_epochs"]
     batch_size: int = DEFAULT_CONFIG["batch_size"]
-    debug: bool = DEFAULT_CONFIG["debug"]
     last_webcam_index: int = DEFAULT_CONFIG["last_webcam_index"]
-    preview_max_width: int = DEFAULT_CONFIG["preview_max_width"]
-    preview_max_height: int = DEFAULT_CONFIG["preview_max_height"]
     camera_width: int = DEFAULT_CONFIG["camera_width"]
     camera_height: int = DEFAULT_CONFIG["camera_height"]
     camera_fps: int = DEFAULT_CONFIG["camera_fps"]
     
     # General Application Settings
-    app_theme: str = DEFAULT_CONFIG["app_theme"]
     language: str = DEFAULT_CONFIG["language"]
-    performance_mode: str = DEFAULT_CONFIG["performance_mode"]
-    max_memory_usage_mb: int = DEFAULT_CONFIG["max_memory_usage_mb"]
-    enable_logging: bool = DEFAULT_CONFIG["enable_logging"]
-    log_level: str = DEFAULT_CONFIG["log_level"]
     
     # Enhanced Webcam Settings
-    camera_auto_exposure: bool = DEFAULT_CONFIG["camera_auto_exposure"]
-    camera_auto_focus: bool = DEFAULT_CONFIG["camera_auto_focus"]
-    camera_brightness: int = DEFAULT_CONFIG["camera_brightness"]
-    camera_contrast: int = DEFAULT_CONFIG["camera_contrast"]
-    camera_saturation: int = DEFAULT_CONFIG["camera_saturation"]
-    camera_recording_format: str = DEFAULT_CONFIG["camera_recording_format"]
-    camera_buffer_size: int = DEFAULT_CONFIG["camera_buffer_size"]
-    camera_preview_enabled: bool = DEFAULT_CONFIG["camera_preview_enabled"]
     camera_device_name: str = DEFAULT_CONFIG["camera_device_name"]
     
     # Enhanced Image Analysis Settings
     detection_confidence_threshold: float = DEFAULT_CONFIG["detection_confidence_threshold"]
     detection_iou_threshold: float = DEFAULT_CONFIG["detection_iou_threshold"]
-    roi_x: int = DEFAULT_CONFIG["roi_x"]
-    roi_y: int = DEFAULT_CONFIG["roi_y"]
-    roi_width: int = DEFAULT_CONFIG["roi_width"]
-    roi_height: int = DEFAULT_CONFIG["roi_height"]
-    enable_roi: bool = DEFAULT_CONFIG["enable_roi"]
     preferred_model: str = DEFAULT_CONFIG["preferred_model"]
-    export_quality: int = DEFAULT_CONFIG["export_quality"]  # Fixed at 100%
-    difference_sensitivity: float = DEFAULT_CONFIG["difference_sensitivity"]
-    highlight_differences: bool = DEFAULT_CONFIG["highlight_differences"]
     
     # Enhanced Chatbot Settings (secured with environment variables)
     gemini_api_key: str = DEFAULT_CONFIG["gemini_api_key"]
@@ -84,25 +56,11 @@ class Config:
     gemini_timeout: int = DEFAULT_CONFIG["gemini_timeout"]
     gemini_temperature: float = DEFAULT_CONFIG["gemini_temperature"]
     gemini_max_tokens: int = DEFAULT_CONFIG["gemini_max_tokens"]
-    enable_ai_analysis: bool = DEFAULT_CONFIG["enable_ai_analysis"]
-    chat_history_limit: int = DEFAULT_CONFIG["chat_history_limit"]
-    chat_auto_save: bool = DEFAULT_CONFIG["chat_auto_save"]
-    response_format: str = DEFAULT_CONFIG["response_format"]
-    enable_rate_limiting: bool = DEFAULT_CONFIG["enable_rate_limiting"]
-    requests_per_minute: int = DEFAULT_CONFIG["requests_per_minute"]
-    context_window_size: int = DEFAULT_CONFIG["context_window_size"]
-    enable_conversation_memory: bool = DEFAULT_CONFIG["enable_conversation_memory"]
     chatbot_persona: str = DEFAULT_CONFIG["chatbot_persona"]
 
     # Security flags
     _has_secure_api_key: bool = False
     _environment_config: Optional[EnvironmentConfig] = None
-    
-    # Additional Enhanced Settings
-    export_include_metadata: bool = DEFAULT_CONFIG["export_include_metadata"]
-    reference_image_path: str = DEFAULT_CONFIG["reference_image_path"]
-    analysis_history_days: int = DEFAULT_CONFIG["analysis_history_days"]
-    chat_export_format: str = DEFAULT_CONFIG["chat_export_format"]
     
     # Arbitrary extra values retained for forward compatibility
     extra: Dict[str, Any] = field(default_factory=dict)

@@ -18,9 +18,6 @@ import hashlib
 from .settings import Config
 from .settings_manager import SettingsManager
 from .atomic_applier import (
-    TransactionalSettingsApplier,
-    ServicePriority,
-    UpdateType,
     create_transactional_applier
 )
 from .validation import ValidationEngine, ValidationLevel, ValidationResult

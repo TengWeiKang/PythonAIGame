@@ -53,7 +53,7 @@ from .dialogs.training_progress_dialog import TrainingProgressDialog
 from ..core.performance import PerformanceMonitor, performance_timer
 from ..core.cache_manager import CacheManager, generate_image_hash
 from ..core.memory_manager import get_memory_manager
-from ..core.threading_manager import get_threading_manager, TaskPriority, run_in_thread
+from ..core.threading_manager import get_threading_manager
 from ..ui.optimized_canvas import OptimizedCanvas, VideoCanvas, ChatCanvas
 
 
@@ -95,8 +95,7 @@ class ModernMainWindow:
     def __init__(self, root: tk.Tk, config: Config):
         self.root = root
         self.config = config
-        self.current_theme = config.app_theme
-        self.COLORS = self.THEMES.get(self.current_theme, self.THEMES['Dark'])
+        self.COLORS = self.THEMES['Dark']
         
         # Initialize performance systems first with error handling
         try:
@@ -166,13 +165,6 @@ class ModernMainWindow:
         except Exception as e:
             logging.error(f"Failed to initialize Gemini service: {e}")
             self.gemini_service = None
-
-        # Register memory pressure callback if available
-        if self.memory_manager:
-            try:
-                self.memory_manager.register_memory_pressure_callback(self._on_memory_pressure)
-            except Exception as e:
-                logging.error(f"Failed to register memory pressure callback: {e}")
 
         # Enhanced chat session initialization with better detection
         self._gemini_configured = False
@@ -281,13 +273,6 @@ class ModernMainWindow:
 
                     # Initialize Workflow Orchestrator
                     workflow_config = WorkflowConfig(
-                        auto_yolo_analysis=getattr(config, 'auto_yolo_analysis', True),
-                        reference_comparison_enabled=getattr(config, 'reference_comparison_enabled', True),
-                        min_detection_confidence=getattr(config, 'min_detection_confidence', 0.5),
-                        max_objects_to_analyze=getattr(config, 'max_objects_to_analyze', 10),
-                        async_timeout_seconds=getattr(config, 'workflow_async_timeout', 5.0),
-                        enable_performance_monitoring=getattr(config, 'workflow_performance_monitoring', True),
-                        cache_analysis_results=getattr(config, 'cache_analysis_results', True)
                     )
 
                     self.workflow_orchestrator = YoloWorkflowOrchestrator(
@@ -348,9 +333,6 @@ class ModernMainWindow:
         
         # Initialize services with current config values
         self._update_all_services_with_config()
-        
-        # Apply current performance mode
-        self.set_performance_mode(self.config.performance_mode)
         
         # Auto-load reference image if available
         self.root.after(200, self._auto_load_reference_image)
@@ -529,98 +511,6 @@ class ModernMainWindow:
                 self._apply_theme_to_widget(child)
         except Exception as e:
             logging.debug(f"Error applying theme to widget {widget}: {e}")
-    
-    def set_performance_mode(self, mode: str) -> bool:
-        """Set performance mode and apply optimizations.
-        
-        Args:
-            mode: Performance mode ('Performance', 'Balanced', 'Power_Saving')
-            
-        Returns:
-            bool: True if performance mode was applied successfully
-        """
-        valid_modes = ['Performance', 'Balanced', 'Power_Saving']
-        if mode not in valid_modes:
-            logging.warning(f"Invalid performance mode: {mode}")
-            return False
-        
-        try:
-            # Update config
-            self.config.performance_mode = mode
-            
-            # Apply performance optimizations
-            if mode == 'Performance':
-                self._apply_performance_optimizations()
-            elif mode == 'Balanced':
-                self._apply_balanced_optimizations()
-            else:  # Power_Saving
-                self._apply_power_saving_optimizations()
-            
-            logging.info(f"Performance mode set to: {mode}")
-            return True
-        except Exception as e:
-            logging.error(f"Failed to set performance mode {mode}: {e}")
-            return False
-    
-    def _apply_performance_optimizations(self):
-        """Apply optimizations for maximum performance."""
-        try:
-            # Increase FPS targets for real-time processing
-            if self.config.target_fps < 60:
-                self.config.target_fps = 60
-            
-            # Increase camera FPS if supported
-            if self.config.camera_fps < 30:
-                self.config.camera_fps = 30
-            
-            # Optimize memory usage for performance
-            if self.memory_manager:
-                self.memory_manager.set_memory_pressure_threshold(0.85)  # Higher threshold
-            
-            # Optimize threading for performance
-            if self.threading_manager:
-                self.threading_manager.set_max_workers('detection', 4)  # More workers
-                self.threading_manager.set_max_workers('inference', 2)
-            
-            # Enable GPU usage if available
-            self.config.use_gpu = True
-            
-            # Optimize cache settings
-            if self.cache_manager:
-                self.cache_manager.set_cache_size_mb(512)  # Larger cache
-                
-            logging.debug("Performance optimizations applied")
-        except Exception as e:
-            logging.error(f"Failed to apply performance optimizations: {e}")
-    
-    def _apply_balanced_optimizations(self):
-        """Apply balanced optimizations for good performance with reasonable resource usage."""
-        try:
-            # Standard FPS targets
-            self.config.target_fps = 30
-            self.config.camera_fps = 30
-            
-            # Balanced memory usage
-            if self.memory_manager:
-                self.memory_manager.set_memory_pressure_threshold(0.75)  # Standard threshold
-            
-            # Balanced threading
-            if self.threading_manager:
-                self.threading_manager.set_max_workers('detection', 2)  # Moderate workers
-                self.threading_manager.set_max_workers('inference', 1)
-            
-            # Keep GPU setting as configured
-            # self.config.use_gpu remains unchanged
-            
-            # Standard cache settings
-            if self.cache_manager:
-                self.cache_manager.set_cache_size_mb(256)  # Standard cache
-                
-            logging.debug("Balanced optimizations applied")
-        except Exception as e:
-            logging.error(f"Failed to apply balanced optimizations: {e}")
-    
-    def _apply_power_saving_optimizations(self):
         """Apply optimizations to minimize resource usage."""
         try:
             # Lower FPS targets to save power
@@ -1448,68 +1338,115 @@ class ModernMainWindow:
     
     def _display_image_fallback(self, canvas, image):
         """Fallback image display for non-optimized canvases."""
-        if image is None:
+        if image is None or image.size == 0:
             return False
+
+        try:
+            # Validate image data
+            if len(image.shape) < 2:
+                print("Warning: Invalid image dimensions")
+                return False
+
+            # Force canvas update and get dimensions with retry logic
+            canvas.update()
+            self.root.update_idletasks()
+
+            canvas_width = canvas.winfo_width()
+            canvas_height = canvas.winfo_height()
+
+            # Use reasonable defaults if canvas dimensions are not available
+            if canvas_width <= 1 or canvas_height <= 1:
+                canvas_width = 300
+                canvas_height = 200
+                print(f"Warning: Using default canvas dimensions {canvas_width}x{canvas_height}")
         
-        # Get canvas dimensions
-        canvas.update_idletasks()
-        canvas_width = canvas.winfo_width()
-        canvas_height = canvas.winfo_height()
-        
-        if canvas_width <= 1 or canvas_height <= 1:
-            return False
-        
-        # Check cache first
-        image_hash = generate_image_hash(image)
-        cache_key = f"display:{image_hash}:{canvas_width}x{canvas_height}"
-        
-        cached_photo = self.cache_manager.image_cache.get(cache_key)
-        if cached_photo is not None:
+            # Check cache first
+            image_hash = generate_image_hash(image)
+            cache_key = f"display:{image_hash}:{canvas_width}x{canvas_height}"
+
+            cached_photo = self.cache_manager.image_cache.get(cache_key)
+            if cached_photo is not None:
+                canvas.delete("all")
+                canvas.create_image(
+                    canvas_width // 2,
+                    canvas_height // 2,
+                    anchor="center",
+                    image=cached_photo
+                )
+                # Store PhotoImage reference to prevent garbage collection
+                if not hasattr(canvas, '_photo_refs'):
+                    canvas._photo_refs = []
+                canvas._photo_refs.append(cached_photo)
+                return True
+
+            # Process image
+            # Convert BGR to RGB with proper validation
+            if len(image.shape) == 3 and image.shape[2] == 3:
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            elif len(image.shape) == 3 and image.shape[2] == 4:
+                # Handle RGBA images
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
+            else:
+                # Grayscale or already RGB
+                image_rgb = image
+
+            # Validate processed image dimensions
+            img_height, img_width = image_rgb.shape[:2]
+
+            if img_width <= 0 or img_height <= 0:
+                print("Error: Invalid processed image dimensions")
+                return False
+
+            # Calculate scaling (don't upscale)
+            scale = min(canvas_width / img_width, canvas_height / img_height)
+            scale = min(scale, 1.0)  # Don't upscale beyond original size
+
+            new_width = max(1, int(img_width * scale))
+            new_height = max(1, int(img_height * scale))
+
+            # Resize image with proper interpolation
+            resized_image = cv2.resize(image_rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+            # Convert to PhotoImage
+            pil_image = Image.fromarray(resized_image)
+            photo = ImageTk.PhotoImage(pil_image)
+
+            # Cache the PhotoImage
+            self.cache_manager.image_cache.put(cache_key, photo)
+
+            # Update canvas
             canvas.delete("all")
             canvas.create_image(
-                canvas_width // 2, 
-                canvas_height // 2, 
-                anchor="center", 
-                image=cached_photo
+                canvas_width // 2,
+                canvas_height // 2,
+                anchor="center",
+                image=photo
             )
-            canvas.image = cached_photo  # Keep reference
+
+            # Store PhotoImage reference to prevent garbage collection
+            if not hasattr(canvas, '_photo_refs'):
+                canvas._photo_refs = []
+            canvas._photo_refs.append(photo)
+
             return True
-        
-        # Process image
-        # Convert BGR to RGB
-        if len(image.shape) == 3 and image.shape[2] == 3:
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        else:
-            image_rgb = image
-        
-        # Calculate scaling
-        img_height, img_width = image_rgb.shape[:2]
-        scale = min(canvas_width / img_width, canvas_height / img_height)
-        
-        new_width = int(img_width * scale)
-        new_height = int(img_height * scale)
-        
-        # Resize image
-        resized_image = cv2.resize(image_rgb, (new_width, new_height))
-        
-        # Convert to PhotoImage
-        pil_image = Image.fromarray(resized_image)
-        photo = ImageTk.PhotoImage(pil_image)
-        
-        # Cache the PhotoImage
-        self.cache_manager.image_cache.put(cache_key, photo)
-        
-        # Update canvas
-        canvas.delete("all")
-        canvas.create_image(
-            canvas_width // 2, 
-            canvas_height // 2, 
-            anchor="center", 
-            image=photo
-        )
-        canvas.image = photo  # Keep reference
-        
-        return True
+
+        except Exception as e:
+            print(f"Error in _display_image_fallback: {e}")
+            # Show error message on canvas
+            try:
+                canvas.delete("all")
+                canvas.create_text(
+                    canvas_width // 2 if canvas_width > 1 else 150,
+                    canvas_height // 2 if canvas_height > 1 else 100,
+                    anchor="center",
+                    text=f"Error loading image:\n{str(e)}",
+                    fill="red",
+                    font=("Arial", 10),
+                    justify="center"
+                )
+            except Exception as canvas_error:
+                print(f"Error showing error message on canvas: {canvas_error}")
+            return False
     
     def _update_status(self, message: str):
         """Update the status bar message."""
@@ -1595,7 +1532,6 @@ class ModernMainWindow:
         self._update_status("Reference image cleared")
     
     # Objects Tab Methods
-    
     def _capture_for_training(self):
         """Capture current frame for object training."""
         if self._current_frame is not None:
@@ -1976,9 +1912,40 @@ class ModernMainWindow:
         if object_data.get('image') is not None:
             canvas = tk.Canvas(main_frame, bg='black', height=250)
             canvas.pack(fill='both', expand=True, pady=(0, 10))
-            
-            # Display image
-            self._display_image_on_canvas(canvas, object_data['image'])
+
+            # Display image with retry logic for canvas initialization
+            def display_image_with_retry(attempt=0):
+                """Display image with retry logic for canvas initialization."""
+                try:
+                    success = self._display_image_on_canvas(canvas, object_data['image'])
+                    if not success and attempt < 3:
+                        # Schedule retry if canvas not ready
+                        canvas.after(100, lambda: display_image_with_retry(attempt + 1))
+                    elif not success:
+                        # Show error message after max attempts
+                        canvas.delete("all")
+                        canvas.create_text(
+                            250, 125,
+                            anchor="center",
+                            text="Failed to load image\nafter multiple attempts",
+                            fill="red",
+                            font=("Arial", 10),
+                            justify="center"
+                        )
+                except Exception as e:
+                    print(f"Error in display_image_with_retry: {e}")
+                    canvas.delete("all")
+                    canvas.create_text(
+                        250, 125,
+                        anchor="center",
+                        text=f"Error loading image:\n{str(e)}",
+                        fill="red",
+                        font=("Arial", 10),
+                        justify="center"
+                    )
+
+            # Start image display with retry logic
+            preview_window.after(50, display_image_with_retry)
         
         # Object information
         info_frame = ttk.LabelFrame(main_frame, text="Information", padding="10")
@@ -2008,137 +1975,6 @@ class ModernMainWindow:
             text="Close",
             command=preview_window.destroy
         ).pack(pady=(10, 0))
-    
-    def _export_training_dataset(self):
-        """Export the training dataset."""
-        try:
-            # Check if we have objects to export
-            if not self._training_objects:
-                messagebox.showwarning("No Data", "No training objects to export")
-                return
-            
-            # Ask user for export format
-            format_dialog = tk.Toplevel(self.root)
-            format_dialog.title("Export Format")
-            format_dialog.geometry("300x150")
-            format_dialog.resizable(False, False)
-            format_dialog.transient(self.root)
-            format_dialog.grab_set()
-            
-            # Center dialog
-            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 150
-            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 75
-            format_dialog.geometry(f"+{x}+{y}")
-            
-            # Dialog content
-            main_frame = ttk.Frame(format_dialog, padding="20")
-            main_frame.pack(fill='both', expand=True)
-            
-            ttk.Label(main_frame, text="Select export format:", font=('Arial', 11, 'bold')).pack(pady=(0, 10))
-            
-            format_var = tk.StringVar(value="yolo")
-            
-            ttk.Radiobutton(main_frame, text="YOLO Format", variable=format_var, value="yolo").pack(anchor='w', pady=2)
-            ttk.Radiobutton(main_frame, text="COCO Format", variable=format_var, value="coco").pack(anchor='w', pady=2)
-            ttk.Radiobutton(main_frame, text="Pascal VOC Format", variable=format_var, value="pascal_voc").pack(anchor='w', pady=2)
-            
-            # Buttons
-            button_frame = ttk.Frame(main_frame)
-            button_frame.pack(fill='x', pady=(15, 0))
-            
-            result = {'format': None}
-            
-            def on_export():
-                result['format'] = format_var.get()
-                format_dialog.destroy()
-            
-            def on_cancel():
-                result['format'] = None
-                format_dialog.destroy()
-            
-            ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side='right', padx=(5, 0))
-            ttk.Button(button_frame, text="Export", command=on_export).pack(side='right')
-            
-            # Wait for dialog
-            self.root.wait_window(format_dialog)
-            
-            if result['format']:
-                # Choose output directory
-                output_dir = filedialog.askdirectory(title="Select Export Directory")
-                if output_dir:
-                    # Export dataset
-                    export_path = self.object_training_service.export_dataset(
-                        result['format'],
-                        output_dir
-                    )
-                    
-                    self._update_status(f"Dataset exported to {export_path}")
-                    messagebox.showinfo("Success", f"Dataset exported successfully to:\n{export_path}")
-        
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to export dataset: {e}")
-            self._update_status("Dataset export failed")
-    
-    def _analyze_current_image(self):
-        """Analyze current captured image using Gemini."""
-        if not self.gemini_service or not self.gemini_service.is_configured():
-            messagebox.showwarning("Warning", "Gemini API key not configured. Please check settings.")
-            return
-        
-        if self._captured_image is None:
-            messagebox.showwarning("Warning", "No image captured to analyze")
-            return
-        
-        self._add_chat_message("User", "Analyzing current image...")
-        self._update_status("Analyzing image...")
-        
-        def on_result(result, error):
-            if error:
-                self.root.after(0, lambda: self._add_chat_message("System", f"Error: {error}"))
-                self.root.after(0, lambda: self._update_status("Analysis failed"))
-            else:
-                self.root.after(0, lambda: self._add_chat_message("AI", result))
-                self.root.after(0, lambda: self._update_status("Analysis complete"))
-        
-        if self.gemini_service:
-            self.gemini_service.analyze_single_image_async(self._captured_image, on_result)
-        else:
-            messagebox.showerror("Error", "Gemini service not available")
-    
-    def _compare_images(self):
-        """Compare reference and current images using Gemini."""
-        if not self.gemini_service or not self.gemini_service.is_configured():
-            messagebox.showwarning("Warning", "Gemini API key not configured. Please check settings.")
-            return
-        
-        if self._reference_image is None:
-            messagebox.showwarning("Warning", "No reference image loaded")
-            return
-        
-        if self._captured_image is None:
-            messagebox.showwarning("Warning", "No current image captured")
-            return
-        
-        self._add_chat_message("User", "Comparing reference and current images...")
-        self._update_status("Comparing images...")
-        
-        def on_result(result, error):
-            if error:
-                self.root.after(0, lambda: self._add_chat_message("System", f"Error: {error}"))
-                self.root.after(0, lambda: self._update_status("Comparison failed"))
-            else:
-                self.root.after(0, lambda: self._add_chat_message("AI", result))
-                self.root.after(0, lambda: self._update_status("Comparison complete"))
-        
-        if self.gemini_service:
-            self.gemini_service.compare_images_async(
-                self._reference_image,
-                self._captured_image,
-                on_result
-            )
-        else:
-            messagebox.showerror("Error", "Gemini service not available")
-    
     
     def _on_chat_send(self, event=None):
         """Legacy chat send method - redirects to enhanced version."""
@@ -2252,34 +2088,7 @@ class ModernMainWindow:
                 fg=status_color,
                 font=('Segoe UI', 7)
             ).pack(side='right')
-        
-        # Add context menu for copy functionality
-        def show_context_menu(event):
-            context_menu = tk.Menu(self.root, tearoff=0)
-            context_menu.add_command(
-                label="📋 Copy Message",
-                command=lambda: self._copy_message_to_clipboard(message)
-            )
-            context_menu.add_separator()
-            if sender == "AI":
-                context_menu.add_command(
-                    label="👍 Good Response",
-                    command=lambda: self._rate_message(message_id, 'positive')
-                )
-                context_menu.add_command(
-                    label="👎 Poor Response", 
-                    command=lambda: self._rate_message(message_id, 'negative')
-                )
-            
-            try:
-                context_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                context_menu.grab_release()
-        
-        # Bind right-click context menu
-        message_label.bind('<Button-3>', show_context_menu)
-        bubble.bind('<Button-3>', show_context_menu)
-        
+                
         # Store message data
         message_data = {
             'id': message_id,
@@ -2301,33 +2110,8 @@ class ModernMainWindow:
         
         return message_id
     
-    def _remove_last_ai_message(self):
-        """Remove the last AI message from chat display (e.g., typing indicator)."""
-        if not self._message_widgets:
-            return
-        
-        # Check if last message was from AI
-        last_message = self._message_widgets[-1]
-        if last_message['sender'] != 'AI':
-            return
-        
-        # Remove the widget
-        last_message['widget'].destroy()
-        
-        # Remove from tracking lists
-        self._message_widgets.pop()
-        if self._chat_history and self._chat_history[-1]['id'] == last_message['id']:
-            self._chat_history.pop()
-        
-        # Update canvas scroll region
-        self._chat_canvas.update_idletasks()
-        self._chat_canvas.configure(scrollregion=self._chat_canvas.bbox("all"))
-    
     def _setup_chat_accessibility(self):
         """Setup accessibility features for the chat interface."""
-        # Keyboard navigation bindings
-        self._chat_canvas.bind('<Tab>', self._focus_next_widget)
-        self._chat_canvas.bind('<Shift-Tab>', self._focus_previous_widget)
         
         # Enable focus for keyboard navigation
         self._chat_canvas.configure(takefocus=True)
@@ -2351,17 +2135,7 @@ class ModernMainWindow:
                 self._send_button.widget_name = "send_message_button"
         except (AttributeError, tk.TclError):
             pass  # Gracefully handle if attributes don't exist
-    
-    def _focus_next_widget(self, event):
-        """Navigate to next focusable widget."""
-        event.widget.tk_focusNext().focus()
-        return 'break'
-    
-    def _focus_previous_widget(self, event):
-        """Navigate to previous focusable widget."""
-        event.widget.tk_focusPrev().focus()
-        return 'break'
-    
+        
     def _clear_chat(self):
         """Clear the chat display."""
         # Clear all message widgets
@@ -2432,23 +2206,6 @@ class ModernMainWindow:
         message_widget.configure(bg=self.COLORS['bg_primary'])
         # Note: Tkinter doesn't support true alpha blending, so we simulate with color transitions
         
-    def _copy_message_to_clipboard(self, message: str):
-        """Copy message text to clipboard."""
-        self.root.clipboard_clear()
-        self.root.clipboard_append(message)
-        self._update_status("Message copied to clipboard")
-    
-    def _rate_message(self, message_id: int, rating: str):
-        """Rate an AI message (for future learning/improvement)."""
-        # Find the message and update rating
-        for msg_data in self._message_widgets:
-            if msg_data['id'] == message_id:
-                msg_data['rating'] = rating
-                break
-        
-        rating_text = "positive" if rating == 'positive' else "negative"
-        self._update_status(f"Message rated as {rating_text}")
-    
     def _on_chat_send_enhanced(self, event=None):
         """Enhanced chat send handler with improved UX."""
         # Get message text
@@ -2701,14 +2458,6 @@ class ModernMainWindow:
             self._add_chat_message("System", error_msg)
             return
         
-        # Handle special commands (help command removed - now acts as normal chat)
-        if message.lower().strip() == "analyze current":
-            self._analyze_current_image()
-            return
-        elif message.lower().strip() == "compare":
-            self._compare_images()
-            return
-        
         # Show enhanced typing indicator
         self._show_typing_indicator()
         
@@ -2924,25 +2673,6 @@ class ModernMainWindow:
             # Widget destroyed, stop animation
             pass
     
-    def _get_help_text(self) -> str:
-        """Get help text for chat commands."""
-        return """Available commands and features:
-
-🔍 **analyze current** - Analyze the current captured image
-📊 **compare** - Compare reference and current images
-
-**Interactive Features:**
-• Right-click on any message to copy or rate it
-• Use Shift+Enter for new lines in your message
-• Scroll through chat history with mouse wheel
-• Type commands directly into the chat
-
-**Tips:**
-• Ensure good lighting for better image analysis
-• Use clear, specific questions for better AI responses
-• The AI can analyze images, compare them, and answer questions
-• Internet connection required for AI features"""
-
     def _create_enhanced_chat_response(self, analysis_result, frame_dimensions: tuple) -> str:
         """
         Create enhanced chat response with visible YOLO detection data.
@@ -3268,115 +2998,9 @@ Tips:
         except Exception as e:
             print(f"Error showing reference feedback: {e}")
 
-    def _on_memory_pressure(self, level: str, stats):
-        """Handle memory pressure events."""
-        if level == 'critical':
-            # Critical memory pressure - aggressive cleanup
-            self._emergency_memory_cleanup()
-            self._update_status(f"Critical memory usage: {stats.memory_percent:.1f}% - Performing cleanup")
-        elif level == 'warning':
-            # Warning level - gentle cleanup
-            self._optimize_memory_usage()
-            self._update_status(f"High memory usage: {stats.memory_percent:.1f}% - Optimizing")
-    
-    def _emergency_memory_cleanup(self):
-        """Emergency memory cleanup for critical memory pressure."""
-        try:
-            # Clear all image caches
-            self.cache_manager.clear_all_caches()
-            
-            # Clear canvas caches
-            if hasattr(self._video_canvas, 'clear_caches'):
-                self._video_canvas.clear_caches()
-            if hasattr(self._reference_canvas, 'clear_caches'):
-                self._reference_canvas.clear_caches()
-            if hasattr(self._objects_canvas, 'clear_caches'):
-                self._objects_canvas.clear_caches()
-            
-            # Force memory manager cleanup
-            self.memory_manager.emergency_cleanup()
-            
-            print("Emergency memory cleanup completed")
-            
-        except Exception as e:
-            print(f"Error during emergency memory cleanup: {e}")
-    
-    def _optimize_memory_usage(self):
-        """Optimize memory usage during warnings."""
-        try:
-            # Gentle cache cleanup
-            if hasattr(self._video_canvas, 'clear_caches'):
-                self._video_canvas.clear_caches()
-            
-            # Optimize memory manager
-            self.memory_manager.optimize_memory_usage()
-            
-        except Exception as e:
-            print(f"Error during memory optimization: {e}")
-    
-    @run_in_thread(pool_type='background')
-    def _background_performance_monitoring(self):
-        """Background performance monitoring and optimization."""
-        while hasattr(self, '_monitoring_active') and self._monitoring_active:
-            try:
-                # Get current performance metrics
-                metrics = self.performance_monitor.get_current_metrics()
-                
-                if metrics:
-                    # Check for performance issues
-                    if metrics.cpu_percent > 90:
-                        # High CPU usage - reduce video quality
-                        if hasattr(self._video_canvas, 'set_render_quality'):
-                            self._video_canvas.set_render_quality('low')
-                    elif metrics.cpu_percent < 50:
-                        # Low CPU usage - can increase quality
-                        if hasattr(self._video_canvas, 'set_render_quality'):
-                            self._video_canvas.set_render_quality('medium')
-                    
-                    # Update FPS from webcam service
-                    if hasattr(self.webcam_service, 'get_current_fps'):
-                        actual_fps = self.webcam_service.get_current_fps() if self.webcam_service else 0
-                        self.root.after(0, lambda: self._update_fps_display(actual_fps))
-                
-                # Sleep for monitoring interval
-                import time
-                time.sleep(5.0)  # Check every 5 seconds
-                
-            except Exception as e:
-                print(f"Performance monitoring error: {e}")
-                import time
-                time.sleep(1.0)
-    
-    def start_performance_monitoring(self):
-        """Start background performance monitoring."""
-        self._monitoring_active = True
-        self._background_performance_monitoring()
-    
-    def stop_performance_monitoring(self):
-        """Stop background performance monitoring."""
-        self._monitoring_active = False
-    
-    def get_performance_report(self) -> Dict[str, Any]:
-        """Get comprehensive performance report."""
-        return {
-            'memory': self.memory_manager.get_memory_report(),
-            'threading': self.threading_manager.get_comprehensive_stats(),
-            'cache': self.cache_manager.get_cache_stats(),
-            'performance': {
-                'current_metrics': self.performance_monitor.get_current_metrics(),
-                'operation_stats': {
-                    op: self.performance_monitor.get_operation_stats(op)
-                    for op in ['webcam_read', 'ui_display_image_on_canvas', 'gemini_send_message']
-                }
-            }
-        }
-    
     def __del__(self):
         """Cleanup resources."""
         try:
-            # Stop performance monitoring
-            self.stop_performance_monitoring()
-            
             # Stop streaming
             self._is_streaming = False
             
@@ -3405,43 +3029,6 @@ Tips:
         except Exception as e:
             print(f"Error during cleanup: {e}")
     
-    def _show_performance_dialog(self):
-        """Show performance monitoring dialog."""
-        try:
-            from .dialogs.performance_dialog import PerformanceDialog
-            
-            dialog = PerformanceDialog(
-                self.root,
-                self.get_performance_report(),
-                self.cache_manager,
-                self.memory_manager,
-                self.performance_monitor
-            )
-        except ImportError:
-            # Fallback to simple messagebox if dialog doesn't exist
-            report = self.get_performance_report()
-            memory_info = report.get('memory', {}).get('current', {})
-            
-            message = f"""Performance Report:
-            
-Memory Usage: {memory_info.get('memory_percent', 0):.1f}%
-Used Memory: {memory_info.get('used_memory_mb', 0):.1f} MB
-Active Threads: {report.get('threading', {}).get('system', {}).get('total_threads', 0)}
-
-Cache Hit Rates:
-{self._format_cache_stats(report.get('cache', {}))}
-"""
-            
-            messagebox.showinfo("Performance Report", message)
-    
-    def _format_cache_stats(self, cache_stats: Dict) -> str:
-        """Format cache statistics for display."""
-        lines = []
-        for cache_name, stats in cache_stats.items():
-            if isinstance(stats, dict) and 'hit_rate' in stats:
-                lines.append(f"  {cache_name}: {stats['hit_rate']:.1%}")
-        return '\n'.join(lines) if lines else "  No cache statistics available"
-    
     def _show_welcome_message(self):
         """Show welcome message in chat."""
         if self._gemini_configured and hasattr(self, '_messages_frame'):
@@ -3451,8 +3038,6 @@ Cache Hit Rates:
         elif hasattr(self, '_messages_frame'):
             self._add_chat_message("System",
                 "Welcome! To enable AI chat, please configure your Gemini API key in Settings > Chatbot.")
-
-    def cleanup_resources(self):
         """Clean up resources when closing the application."""
         logging.info("Starting application cleanup...")
 

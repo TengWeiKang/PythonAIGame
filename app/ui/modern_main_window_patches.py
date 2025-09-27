@@ -4,7 +4,6 @@ This module provides complete patches for all identified vulnerabilities.
 """
 
 import logging
-from typing import Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -148,26 +147,6 @@ class ModernMainWindowPatches:
                 except Exception as e:
                     logger.error(f"Failed to update Gemini configuration: {e}")
                     instance._gemini_configured = False
-
-            # Safe performance optimization updates
-            if hasattr(instance, 'memory_manager') and instance.memory_manager:
-                try:
-                    if updated_config.performance_mode == 'high':
-                        instance.memory_manager.set_memory_pressure_threshold(0.85)
-                    elif updated_config.performance_mode == 'balanced':
-                        instance.memory_manager.set_memory_pressure_threshold(0.75)
-                    else:  # low
-                        instance.memory_manager.set_memory_pressure_threshold(0.60)
-                except Exception as e:
-                    logger.warning(f"Failed to update memory manager: {e}")
-
-            if hasattr(instance, 'cache_manager') and instance.cache_manager:
-                try:
-                    cache_sizes = {'high': 512, 'balanced': 256, 'low': 128}
-                    cache_size = cache_sizes.get(updated_config.performance_mode, 256)
-                    instance.cache_manager.set_cache_size_mb(cache_size)
-                except Exception as e:
-                    logger.warning(f"Failed to update cache manager: {e}")
 
         except Exception as e:
             logger.error(f"Error saving configuration: {e}")
