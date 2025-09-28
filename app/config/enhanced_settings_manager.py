@@ -54,11 +54,6 @@ class ConfigChangeTracker:
             'detection_confidence_threshold': 'detection',
             'detection_iou_threshold': 'detection',
             'detection_model': 'detection',
-            'enable_roi': 'detection',
-            'roi_x': 'detection',
-            'roi_y': 'detection',
-            'roi_width': 'detection',
-            'roi_height': 'detection',
 
             # AI settings
             'gemini_api_key': 'ai',

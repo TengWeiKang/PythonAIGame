@@ -42,11 +42,11 @@ class WorkflowConfig:
     auto_yolo_analysis: bool = True
     reference_comparison_enabled: bool = True
     min_detection_confidence: float = 0.5
-    max_objects_to_analyze: int = 10
-    async_timeout_seconds: float = 5.0
-    enable_performance_monitoring: bool = True
-    cache_analysis_results: bool = True
-    max_concurrent_operations: int = 3
+    max_objects_to_analyze: int = 50
+    async_timeout_seconds: float = 20.0
+    enable_performance_monitoring: bool = False
+    cache_analysis_results: bool = False
+    max_concurrent_operations: int = 4
 
 
 @dataclass
@@ -104,13 +104,15 @@ class YoloWorkflowOrchestrator:
 
         # Thread pool for concurrent operations
         self.executor = ThreadPoolExecutor(max_workers=self.config.max_concurrent_operations)
+        self._executor_shutdown = False
+        self._executor_lock = threading.Lock()
 
         # Analysis cache
         self._analysis_cache = {} if self.config.cache_analysis_results else None
         self._cache_lock = threading.Lock()
 
         # State tracking
-        self._is_running = False
+        self._is_running = True
         self._active_workflows = 0
         self._workflow_lock = threading.Lock()
 
@@ -240,16 +242,14 @@ class YoloWorkflowOrchestrator:
                 return []
 
             # Run detection in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            detections = await loop.run_in_executor(
-                self.executor,
+            detections = await self._run_in_executor_safe(
                 self._run_yolo_detection_sync,
                 frame
             )
 
             # Filter by confidence and max objects
             detections = [d for d in detections
-                         if d.confidence >= self.config.min_detection_confidence]
+                         if d.score >= self.config.min_detection_confidence]
             detections = detections[:self.config.max_objects_to_analyze]
 
             # Record performance
@@ -266,11 +266,25 @@ class YoloWorkflowOrchestrator:
 
     def _run_yolo_detection_sync(self, frame: np.ndarray) -> List[Detection]:
         """Synchronous YOLO detection (runs in thread pool)."""
+        # Get device from model info or fallback to auto-detection
+        device = 'cpu'  # Default fallback
+        try:
+            if hasattr(self.yolo_backend, 'model') and self.yolo_backend.model:
+                if hasattr(self.yolo_backend.model, 'device'):
+                    device_str = str(self.yolo_backend.model.device)
+                    device = '0' if 'cuda' in device_str.lower() else 'cpu'
+            elif hasattr(self.yolo_backend, 'model_info') and self.yolo_backend.model_info:
+                device_info = self.yolo_backend.model_info.get('device', 'cpu')
+                device = '0' if 'cuda' in device_info.lower() else 'cpu'
+        except Exception as e:
+            logger.debug(f"Could not determine device, using CPU: {e}")
+            device = 'cpu'
+
         return self.yolo_backend.predict(
             frame,
             conf=self.config.min_detection_confidence,
             iou=0.45,
-            device='0' if self.yolo_backend.device == 'cuda' else 'cpu'
+            device=device
         )
 
     async def _run_reference_comparison_async(self,
@@ -291,17 +305,20 @@ class YoloWorkflowOrchestrator:
                 await self._set_reference_frame_async(reference_frame)
 
             # Check if reference is set
-            if not self.reference_manager.has_active_reference():
-                logger.debug("No reference image set for comparison")
+            all_references = self.reference_manager.get_all_references()
+            if not all_references:
+                logger.debug("No reference images available for comparison")
                 return None
 
+            # Get the most recent reference ID
+            most_recent_ref = all_references[-1]  # get_all_references returns newest last
+            reference_id = most_recent_ref['reference_id']
+
             # Run comparison in executor
-            loop = asyncio.get_event_loop()
-            comparison_result = await loop.run_in_executor(
-                self.executor,
-                self.reference_manager.compare_detections,
+            comparison_result = await self._run_in_executor_safe(
+                self.reference_manager.compare_with_reference,
                 detections,
-                self.reference_manager.get_active_reference_id()
+                reference_id
             )
 
             # Record performance
@@ -318,9 +335,7 @@ class YoloWorkflowOrchestrator:
 
     async def _set_reference_frame_async(self, reference_frame: np.ndarray):
         """Set reference frame asynchronously."""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            self.executor,
+        await self._run_in_executor_safe(
             self.reference_manager.capture_reference,
             reference_frame,
             self.config.min_detection_confidence
@@ -336,9 +351,7 @@ class YoloWorkflowOrchestrator:
 
         try:
             # Format in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            formatted_data = await loop.run_in_executor(
-                self.executor,
+            formatted_data = await self._run_in_executor_safe(
                 format_detection_data,
                 detections,
                 frame_dimensions,
@@ -410,9 +423,13 @@ class YoloWorkflowOrchestrator:
             _, image_bytes = cv2.imencode('.jpg', current_frame)
             image_data = image_bytes.tobytes()
 
-            # Send to Gemini with timeout
+            # Send to Gemini with timeout using executor for async behavior
             response = await asyncio.wait_for(
-                self.gemini_service.send_message_async(enhanced_prompt, image_data),
+                self._run_in_executor_safe(
+                    self.gemini_service.send_message,
+                    enhanced_prompt,
+                    image_data
+                ),
                 timeout=self.config.async_timeout_seconds
             )
 
@@ -442,11 +459,6 @@ class YoloWorkflowOrchestrator:
                 del self._analysis_cache[oldest_key]
 
             self._analysis_cache[key] = result
-
-    def get_cached_result(self, key: str) -> Optional[WorkflowResult]:
-        """Get cached analysis result."""
-        with self._cache_lock:
-            return self._analysis_cache.get(key)
 
     def _create_bypass_result(self, user_message: str, start_time: float) -> WorkflowResult:
         """Create result when bypassing YOLO workflow."""
@@ -489,21 +501,110 @@ class YoloWorkflowOrchestrator:
             'metrics': self.performance_monitor.get_summary()
         }
 
+    async def _run_in_executor_safe(self, func: Callable, *args) -> Any:
+        """
+        Safely run a function in the thread pool executor.
+
+        If the executor is shutdown or unavailable, falls back to synchronous execution.
+
+        Args:
+            func: Function to execute
+            *args: Arguments to pass to the function
+
+        Returns:
+            Result of the function execution
+
+        Raises:
+            Exception: If both async and sync execution fail
+        """
+        with self._executor_lock:
+            # Check if executor is available
+            if self._executor_shutdown or not self._is_running:
+                logger.warning(f"Executor unavailable, running {func.__name__} synchronously")
+                try:
+                    return func(*args)
+                except Exception as e:
+                    logger.error(f"Synchronous fallback failed for {func.__name__}: {e}")
+                    raise
+
+        try:
+            loop = asyncio.get_event_loop()
+            # Double-check executor state before scheduling
+            with self._executor_lock:
+                if self._executor_shutdown:
+                    logger.warning(f"Executor shutdown during scheduling, falling back to sync for {func.__name__}")
+                    return func(*args)
+
+            return await loop.run_in_executor(self.executor, func, *args)
+
+        except RuntimeError as e:
+            if "cannot schedule new futures after shutdown" in str(e):
+                logger.warning(f"Executor shutdown detected, falling back to sync for {func.__name__}")
+                # Mark executor as shutdown for future calls
+                with self._executor_lock:
+                    self._executor_shutdown = True
+                try:
+                    return func(*args)
+                except Exception as sync_error:
+                    logger.error(f"Synchronous fallback failed for {func.__name__}: {sync_error}")
+                    raise sync_error
+            else:
+                logger.error(f"Executor error for {func.__name__}: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error in executor for {func.__name__}: {e}")
+            # Try synchronous fallback as last resort
+            try:
+                logger.info(f"Attempting synchronous fallback for {func.__name__}")
+                return func(*args)
+            except Exception as sync_error:
+                logger.error(f"Final synchronous fallback failed for {func.__name__}: {sync_error}")
+                raise sync_error
+
+    def _is_executor_available(self) -> bool:
+        """
+        Check if the thread pool executor is available for scheduling.
+
+        Returns:
+            bool: True if executor is available, False otherwise
+        """
+        with self._executor_lock:
+            return not self._executor_shutdown and self._is_running and self.executor is not None
+
     def shutdown(self):
         """Shutdown the orchestrator and cleanup resources."""
         logger.info("Shutting down YoloWorkflowOrchestrator")
+
+        # Mark as shutting down
+        with self._executor_lock:
+            self._is_running = False
 
         # Wait for active workflows to complete
         timeout = 10
         start_time = time.time()
         while self._active_workflows > 0 and (time.time() - start_time) < timeout:
+            logger.debug(f"Waiting for {self._active_workflows} active workflows to complete")
             time.sleep(0.1)
 
-        # Shutdown executor
-        self.executor.shutdown(wait=True, timeout=5)
+        if self._active_workflows > 0:
+            logger.warning(f"Shutdown timeout: {self._active_workflows} workflows still active")
+
+        # Shutdown executor safely
+        with self._executor_lock:
+            if not self._executor_shutdown and self.executor is not None:
+                try:
+                    logger.debug("Shutting down thread pool executor")
+                    self.executor.shutdown(wait=True)
+                    self._executor_shutdown = True
+                    logger.debug("Thread pool executor shutdown complete")
+                except Exception as e:
+                    logger.error(f"Error during executor shutdown: {e}")
+                    self._executor_shutdown = True  # Mark as shutdown even if error occurred
 
         # Clear cache
         if self._analysis_cache:
-            self._analysis_cache.clear()
+            with self._cache_lock:
+                self._analysis_cache.clear()
+                logger.debug("Analysis cache cleared")
 
         logger.info("YoloWorkflowOrchestrator shutdown complete")

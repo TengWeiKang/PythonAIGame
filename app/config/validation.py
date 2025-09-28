@@ -39,8 +39,6 @@ class SettingsValidator:
     # Response formats
     VALID_RESPONSE_FORMATS = ["Brief", "Detailed", "Technical"]
     
-    # Chat export formats
-    VALID_CHAT_EXPORT_FORMATS = ["JSON", "TXT", "CSV"]
     
     # Gemini models
     # VALID_GEMINI_MODELS = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
@@ -415,12 +413,6 @@ class SettingsValidator:
                 config_dict["analysis_history_days"], 1, 365, "Analysis history days"
             )
         
-        if "chat_export_format" in config_dict:
-            results["chat_export_format"] = SettingsValidator.validate_string_choice(
-                config_dict["chat_export_format"],
-                SettingsValidator.VALID_CHAT_EXPORT_FORMATS,
-                "Chat export format"
-            )
         
         if "reference_image_path" in config_dict:
             results["reference_image_path"] = SettingsValidator.validate_directory_path(
@@ -472,9 +464,6 @@ class SettingsPresets:
         "debug": True,
         "enable_logging": True,
         "log_level": "DEBUG",
-        "chat_auto_save": True,
-        "enable_conversation_memory": True,
-        "auto_save_config": True,
     }
     
     @staticmethod

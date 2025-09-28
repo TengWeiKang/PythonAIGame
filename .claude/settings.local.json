@@ -10,7 +10,15 @@
       "Bash(py:*)",
       "Bash(where python)",
       "Bash(..venvScriptspython.exe debug_config.py)",
-      "Bash(..venvScriptspython.exe -c \"from app.ui.modern_main_window import ModernMainWindow; print(''Import successful'')\")"
+      "Bash(..venvScriptspython.exe -c \"from app.ui.modern_main_window import ModernMainWindow; print(''Import successful'')\")",
+      "Bash(..venvScriptsactivate)",
+      "Bash(find:*)",
+      "Bash(..venvScriptspython.exe main.py)",
+      "Bash(cd:*)",
+      "Bash(./.venv/Scripts/python.exe:*)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(del test_settings_fix.py)",
+      "Bash(.\\.venv\\Scripts\\python.exe:*)"
     ],
     "deny": [],
     "ask": []

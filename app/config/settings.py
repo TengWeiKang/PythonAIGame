@@ -47,8 +47,10 @@ class Config:
     
     # Enhanced Image Analysis Settings
     detection_confidence_threshold: float = DEFAULT_CONFIG["detection_confidence_threshold"]
+    min_detection_confidence: float = DEFAULT_CONFIG["min_detection_confidence"]  # Alias for workflow compatibility
     detection_iou_threshold: float = DEFAULT_CONFIG["detection_iou_threshold"]
     preferred_model: str = DEFAULT_CONFIG["preferred_model"]
+    reference_image_path: str = DEFAULT_CONFIG["reference_image_path"]
     
     # Enhanced Chatbot Settings (secured with environment variables)
     gemini_api_key: str = DEFAULT_CONFIG["gemini_api_key"]
@@ -57,6 +59,17 @@ class Config:
     gemini_temperature: float = DEFAULT_CONFIG["gemini_temperature"]
     gemini_max_tokens: int = DEFAULT_CONFIG["gemini_max_tokens"]
     chatbot_persona: str = DEFAULT_CONFIG["chatbot_persona"]
+
+    # AI Analysis Settings
+    enable_ai_analysis: bool = DEFAULT_CONFIG["enable_ai_analysis"]
+    enable_rate_limiting: bool = DEFAULT_CONFIG["enable_rate_limiting"]
+    requests_per_minute: int = DEFAULT_CONFIG["requests_per_minute"]
+
+    # Debug and Logging Settings
+    debug: bool = DEFAULT_CONFIG["debug"]
+    log_level: str = DEFAULT_CONFIG["log_level"]
+    log_dir: str = DEFAULT_CONFIG["log_dir"]
+    structured_logging: bool = DEFAULT_CONFIG["structured_logging"]
 
     # Security flags
     _has_secure_api_key: bool = False
@@ -292,12 +305,21 @@ def _apply_environment_overrides(config_dict: Dict[str, Any], env_config: Enviro
         config_dict["gemini_api_key"] = env_config.gemini_api_key
         config_dict["enable_ai_analysis"] = True  # Enable AI if API key is provided
 
-    config_dict["gemini_model"] = env_config.gemini_model
-    config_dict["gemini_timeout"] = env_config.gemini_timeout
-    config_dict["gemini_temperature"] = env_config.gemini_temperature
-    config_dict["gemini_max_tokens"] = env_config.gemini_max_tokens
-    config_dict["enable_rate_limiting"] = env_config.gemini_rate_limiting
-    config_dict["requests_per_minute"] = env_config.gemini_requests_per_minute
+    # Only override other settings if they differ from environment defaults
+    # This prevents environment config from overriding config.json when no env vars are set
+    import os
+    if os.environ.get("GEMINI_MODEL"):
+        config_dict["gemini_model"] = env_config.gemini_model
+    if os.environ.get("GEMINI_TIMEOUT"):
+        config_dict["gemini_timeout"] = env_config.gemini_timeout
+    if os.environ.get("GEMINI_TEMPERATURE"):
+        config_dict["gemini_temperature"] = env_config.gemini_temperature
+    if os.environ.get("GEMINI_MAX_TOKENS"):
+        config_dict["gemini_max_tokens"] = env_config.gemini_max_tokens
+    if os.environ.get("GEMINI_RATE_LIMITING"):
+        config_dict["enable_rate_limiting"] = env_config.gemini_rate_limiting
+    if os.environ.get("GEMINI_REQUESTS_PER_MINUTE"):
+        config_dict["requests_per_minute"] = env_config.gemini_requests_per_minute
 
     # Override path settings if provided
     if env_config.data_dir:
@@ -312,10 +334,11 @@ def _apply_environment_overrides(config_dict: Dict[str, Any], env_config: Enviro
         config_dict["results_export_dir"] = env_config.results_export_dir
         config_dict["default_results_dir"] = env_config.results_export_dir
 
-    # Override debug settings
-    if env_config.debug_logging:
-        config_dict["debug"] = True
-        config_dict["log_level"] = "DEBUG"
+    # Override debug settings only if explicitly set
+    if os.environ.get("DEBUG_LOGGING"):
+        config_dict["debug"] = env_config.debug_logging
+        if env_config.debug_logging:
+            config_dict["log_level"] = "DEBUG"
 
     logging.debug("Applied environment variable overrides to configuration")
     return config_dict
@@ -330,7 +353,11 @@ def _sanitize_config_values(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         dict: Sanitized configuration dictionary
     """
-    from ..utils.validation import InputValidator
+    try:
+        from ..utils.validation import InputValidator
+    except ImportError as e:
+        logging.warning(f"Failed to import InputValidator: {e}. Skipping advanced validation.")
+        return config_dict
 
     sanitized = config_dict.copy()
 
@@ -365,7 +392,11 @@ def _sanitize_config_values(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     for key in string_keys:
         if key in sanitized and isinstance(sanitized[key], str):
             try:
-                sanitized[key] = InputValidator.sanitize_string_input(sanitized[key], max_length=5000)
+                if 'InputValidator' in locals():
+                    sanitized[key] = InputValidator.sanitize_string_input(sanitized[key], max_length=5000)
+                else:
+                    # Basic sanitization if InputValidator not available
+                    sanitized[key] = str(sanitized[key]).strip()[:5000]
             except Exception as e:
                 logging.warning(f"Failed to sanitize string {key}: {e}, using default")
                 sanitized[key] = DEFAULT_CONFIG.get(key, "")

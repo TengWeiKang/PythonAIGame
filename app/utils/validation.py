@@ -736,11 +736,6 @@ class ValidationEngine:
             # Detection settings
             'detection_confidence_threshold': float,
             'detection_iou_threshold': float,
-            'enable_roi': bool,
-            'roi_x': int,
-            'roi_y': int,
-            'roi_width': int,
-            'roi_height': int,
 
             # Webcam settings
             'last_webcam_index': int,
@@ -794,10 +789,6 @@ class ValidationEngine:
             # Detection ranges
             'detection_confidence_threshold': (0.0, 1.0),
             'detection_iou_threshold': (0.0, 1.0),
-            'roi_x': (0, 9999),
-            'roi_y': (0, 9999),
-            'roi_width': (0, 9999),
-            'roi_height': (0, 9999),
 
             # Webcam ranges
             'last_webcam_index': (0, 10),
@@ -823,29 +814,6 @@ class ValidationEngine:
 
     def _build_dependency_rules(self) -> List[callable]:
         """Build dependency validation rules."""
-        def validate_roi_dependencies(config_dict: Dict[str, Any], report: ValidationReport) -> None:
-            """Validate ROI settings dependencies."""
-            if config_dict.get('enable_roi', False):
-                roi_fields = ['roi_width', 'roi_height']
-                camera_width = config_dict.get('camera_width', 1280)
-                camera_height = config_dict.get('camera_height', 720)
-
-                roi_x = config_dict.get('roi_x', 0)
-                roi_y = config_dict.get('roi_y', 0)
-                roi_width = config_dict.get('roi_width', 0)
-                roi_height = config_dict.get('roi_height', 0)
-
-                if roi_width <= 0 or roi_height <= 0:
-                    report.add_error('roi_width', 'ROI width and height must be positive when ROI is enabled')
-                    report.add_error('roi_height', 'ROI width and height must be positive when ROI is enabled')
-
-                if roi_x + roi_width > camera_width:
-                    report.add_error('roi_x', f'ROI extends beyond camera width ({camera_width})')
-                    report.suggest_correction('roi_x', max(0, camera_width - roi_width))
-
-                if roi_y + roi_height > camera_height:
-                    report.add_error('roi_y', f'ROI extends beyond camera height ({camera_height})')
-                    report.suggest_correction('roi_y', max(0, camera_height - roi_height))
 
         def validate_ai_dependencies(config_dict: Dict[str, Any], report: ValidationReport) -> None:
             """Validate AI settings dependencies."""
@@ -862,7 +830,7 @@ class ValidationEngine:
                 if batch_size > 32:
                     report.add_warning('batch_size', 'Large batch sizes may cause GPU memory issues')
 
-        return [validate_roi_dependencies, validate_ai_dependencies, validate_performance_dependencies]
+        return [validate_ai_dependencies, validate_performance_dependencies]
 
     def _build_resource_rules(self) -> Dict[str, callable]:
         """Build resource validation rules."""

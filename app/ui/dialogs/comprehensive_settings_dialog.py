@@ -148,6 +148,7 @@ class ComprehensiveSettingsDialog:
         
         # Image Analysis settings
         self.confidence_threshold_var = tk.DoubleVar()
+        self.min_detection_confidence_var = tk.DoubleVar()
         self.iou_threshold_var = tk.DoubleVar()
         self.preferred_model_var = tk.StringVar()
         # Removed: export_format_var (now hardcoded to PNG)
@@ -181,6 +182,7 @@ class ComprehensiveSettingsDialog:
         
         # Image Analysis settings
         self.confidence_threshold_var.set(getattr(self.config, 'detection_confidence_threshold', 0.5))
+        self.min_detection_confidence_var.set(getattr(self.config, 'min_detection_confidence', 0.5))
         self.preferred_model_var.set(getattr(self.config, 'preferred_model', 'yolo12n'))
         # Removed: export_format_var (always PNG)
         self.export_metadata_var.set(getattr(self.config, 'export_include_metadata', True))
@@ -212,6 +214,7 @@ class ComprehensiveSettingsDialog:
             
             # Image Analysis settings
             'confidence_threshold': self.confidence_threshold_var.get(),
+            'min_detection_confidence': self.min_detection_confidence_var.get(),
             'iou_threshold': self.iou_threshold_var.get(),
             'preferred_model': self.preferred_model_var.get(),
             'data_dir': self.data_dir_var.get(),
@@ -249,6 +252,7 @@ class ComprehensiveSettingsDialog:
         
         # Image Analysis settings
         self.confidence_threshold_var.trace('w', lambda *args: self._on_setting_changed('confidence_threshold'))
+        self.min_detection_confidence_var.trace('w', lambda *args: self._on_setting_changed('min_detection_confidence'))
         self.iou_threshold_var.trace('w', lambda *args: self._on_setting_changed('iou_threshold'))
         self.preferred_model_var.trace('w', lambda *args: self._on_setting_changed('preferred_model'))
         self.export_metadata_var.trace('w', lambda *args: self._on_setting_changed('export_metadata'))
@@ -293,6 +297,7 @@ class ComprehensiveSettingsDialog:
             'camera_fps': 'camera_fps_var',
             'camera_device_name': 'camera_device_name_var',
             'confidence_threshold': 'confidence_threshold_var',
+            'min_detection_confidence': 'min_detection_confidence_var',
             'iou_threshold': 'iou_threshold_var',
             'preferred_model': 'preferred_model_var',
             'data_dir': 'data_dir_var',
@@ -874,14 +879,26 @@ class ComprehensiveSettingsDialog:
         # Confidence threshold
         conf_frame = tk.Frame(detection_content, bg=self.COLORS['bg_secondary'])
         conf_frame.pack(fill='x', pady=5)
-        
-        tk.Label(conf_frame, text="Confidence Threshold:", bg=self.COLORS['bg_secondary'], 
+
+        tk.Label(conf_frame, text="Confidence Threshold:", bg=self.COLORS['bg_secondary'],
                 fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
-        
+
         conf_scale = tk.Scale(conf_frame, from_=0.0, to=1.0, resolution=0.01, orient='horizontal',
                             variable=self.confidence_threshold_var, bg=self.COLORS['bg_secondary'],
                             fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
         conf_scale.pack(side='left', padx=(5, 0))
+
+        # Min detection confidence
+        min_conf_frame = tk.Frame(detection_content, bg=self.COLORS['bg_secondary'])
+        min_conf_frame.pack(fill='x', pady=5)
+
+        tk.Label(min_conf_frame, text="Min Detection Confidence:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        min_conf_scale = tk.Scale(min_conf_frame, from_=0.0, to=1.0, resolution=0.01, orient='horizontal',
+                                variable=self.min_detection_confidence_var, bg=self.COLORS['bg_secondary'],
+                                fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
+        min_conf_scale.pack(side='left', padx=(5, 0))
         
         # IoU threshold
         iou_frame = tk.Frame(detection_content, bg=self.COLORS['bg_secondary'])
@@ -1531,6 +1548,7 @@ class ComprehensiveSettingsDialog:
             
             # Image Analysis settings
             settings['detection_confidence_threshold'] = self.confidence_threshold_var.get()
+            settings['min_detection_confidence'] = self.min_detection_confidence_var.get()
             settings['detection_iou_threshold'] = self.iou_threshold_var.get()
             settings['preferred_model'] = self.preferred_model_var.get()
             settings['export_include_metadata'] = self.export_metadata_var.get()
@@ -1565,7 +1583,7 @@ class ComprehensiveSettingsDialog:
         required_keys = [
             'language',
             'last_webcam_index', 'camera_width', 'camera_height', 'camera_fps',
-            'detection_confidence_threshold', 'detection_iou_threshold',
+            'detection_confidence_threshold', 'min_detection_confidence', 'detection_iou_threshold',
             'gemini_api_key', 'gemini_model'
         ]
         
@@ -1576,6 +1594,9 @@ class ComprehensiveSettingsDialog:
         # Validate value ranges
         if not (0 <= settings.get('detection_confidence_threshold', 0) <= 1):
             raise ValueError("Confidence threshold must be between 0 and 1")
+
+        if not (0 <= settings.get('min_detection_confidence', 0) <= 1):
+            raise ValueError("Min detection confidence must be between 0 and 1")
         
         if not (0 <= settings.get('detection_iou_threshold', 0) <= 1):
             raise ValueError("IoU threshold must be between 0 and 1")
@@ -1613,8 +1634,7 @@ class ComprehensiveSettingsDialog:
                     self._apply_gemini_changes_immediately(gemini_service, settings)
             
             # Apply analysis settings immediately
-            analysis_settings = ['detection_confidence_threshold', 'detection_iou_threshold',
-                                'enable_roi', 'roi_x', 'roi_y', 'roi_width', 'roi_height']
+            analysis_settings = ['detection_confidence_threshold', 'min_detection_confidence', 'detection_iou_threshold']
                                 
             if any(setting in settings for setting in analysis_settings):
                 detection_service = self.services.get('detection')
@@ -1725,17 +1745,6 @@ class ComprehensiveSettingsDialog:
             if 'detection_iou_threshold' in settings and hasattr(detection_service, 'set_iou_threshold'):
                 detection_service.set_iou_threshold(settings['detection_iou_threshold'])
             
-            # Update ROI settings
-            if hasattr(detection_service, 'set_roi') and hasattr(detection_service, 'clear_roi'):
-                if settings.get('enable_roi', False):
-                    detection_service.set_roi(
-                        settings.get('roi_x', 0),
-                        settings.get('roi_y', 0),
-                        settings.get('roi_width', 0),
-                        settings.get('roi_height', 0)
-                    )
-                else:
-                    detection_service.clear_roi()
             
             logger.debug("Analysis settings applied immediately")
             
@@ -1769,13 +1778,12 @@ class ComprehensiveSettingsDialog:
             
             # Apply validated settings to config object
             config_updated = False
-            self.config = {}
             for key, value in settings.items():
                 # Apply corrections if any
                 if key in validation_results and validation_results[key].corrected_value is not None:
                     value = validation_results[key].corrected_value
                     logger.info(f"Applied correction for {key}: {settings[key]} -> {value}")
-                
+
                 # Update config object
                 if hasattr(self.config, key):
                     old_value = getattr(self.config, key)
@@ -1785,7 +1793,9 @@ class ComprehensiveSettingsDialog:
                         logger.debug(f"Updated config.{key}: {old_value} -> {value}")
                 else:
                     # Store in extra for unknown keys
-                    self.config[key] = value
+                    if not hasattr(self.config, 'extra'):
+                        self.config.extra = {}
+                    self.config.extra[key] = value
                     config_updated = True
                     logger.debug(f"Set extra config.{key}: {value}")
             
@@ -1800,7 +1810,7 @@ class ComprehensiveSettingsDialog:
             
             # Save settings using the enhanced settings manager with atomic operations
             logger.info("Saving settings to file")
-            success = self.settings_manager.save_settings(self.config)
+            success = self.settings_manager.save_settings(self.config.to_dict())
             
             if not success:
                 error_msg = "Failed to save settings to file. Settings may not persist after restart."
@@ -1819,7 +1829,15 @@ class ComprehensiveSettingsDialog:
                     logger.warning(f"Config file {config_path} not found after save")
             except Exception as e:
                 logger.warning(f"Could not verify saved settings: {e}")
-            
+
+            # Notify the main window that settings have changed
+            if self.callback:
+                try:
+                    logger.info("Notifying main window of settings changes")
+                    self.callback()
+                except Exception as e:
+                    logger.error(f"Error calling settings change callback: {e}")
+
             # Reset change tracking using the new comprehensive system
             self._changes_made = False
             self._reset_change_tracking()

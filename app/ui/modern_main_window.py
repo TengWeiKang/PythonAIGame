@@ -2842,8 +2842,18 @@ Tips:
     
     def _on_settings_changed(self):
         """Handle settings changes and update all services."""
-        self._update_all_services_with_config()
-        self._update_status("Settings updated")
+        try:
+            # Reload config from file to get the latest settings
+            from app.config.settings import load_config
+            self.config = load_config()
+            print("Config reloaded from file after settings change")
+
+            # Update all services with the new config
+            self._update_all_services_with_config()
+            self._update_status("Settings updated")
+        except Exception as e:
+            print(f"Error handling settings change: {e}")
+            self._update_status("Error updating settings")
     
     def _update_all_services_with_config(self):
         """Update all services with current configuration settings."""
@@ -3044,10 +3054,10 @@ Tips:
         # Stop webcam service
         if hasattr(self, 'webcam_service') and self.webcam_service:
             try:
-                self.webcam_service.stop()
-                logging.info("Webcam service stopped")
+                self.webcam_service.close()
+                logging.info("Webcam service closed")
             except Exception as e:
-                logging.error(f"Failed to stop webcam service: {e}")
+                logging.error(f"Failed to close webcam service: {e}")
 
         # Shutdown workflow orchestrator
         if hasattr(self, 'workflow_orchestrator') and self.workflow_orchestrator:

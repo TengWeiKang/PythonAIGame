@@ -806,12 +806,6 @@ class TransactionalSettingsApplier:
             if hasattr(service, 'set_iou_threshold'):
                 service.set_iou_threshold(config.detection_iou_threshold)
 
-            # Update ROI if supported
-            if hasattr(service, 'set_roi') and config.enable_roi:
-                service.set_roi(config.roi_x, config.roi_y,
-                              config.roi_width, config.roi_height)
-            elif hasattr(service, 'clear_roi') and not config.enable_roi:
-                service.clear_roi()
 
             return True
 

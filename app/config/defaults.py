@@ -33,8 +33,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     
     # Enhanced Image Analysis Settings
     "detection_confidence_threshold": 0.5,  # 0.0 to 1.0
+    "min_detection_confidence": 0.5,  # Alias for detection_confidence_threshold for workflow compatibility
     "detection_iou_threshold": 0.45,  # 0.0 to 1.0
     "preferred_model": "yolo12n",
+    "reference_image_path": "",  # Path to currently loaded reference image
     
     # Enhanced Chatbot Settings
     "gemini_api_key": "",
@@ -47,4 +49,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 2. Identify differences and changes
 3. Provide clear, detailed explanations
 4. Help users understand what has changed""",
+
+    # AI Analysis Settings
+    "enable_ai_analysis": False,  # Enabled automatically when API key is provided
+    "enable_rate_limiting": True,
+    "requests_per_minute": 15,
+
+    # Debug and Logging Settings
+    "debug": False,
+    "log_level": "INFO",
+    "log_dir": "logs",
+    "structured_logging": False,
 }
