@@ -236,9 +236,16 @@ class ModernMainWindow:
 
                 self.yolo_backend = YoloBackend(yolo_config)
 
-                # Load the YOLO model
-                model_name = yolo_config['model_size']
-                if self.yolo_backend.load_model(model_name):
+                # Load the YOLO model - prioritize trained model.pt if available
+                model_pt_path = os.path.join(self.config.models_dir, "model.pt")
+                if os.path.isfile(model_pt_path):
+                    model_to_load = model_pt_path
+                    logging.info(f"Loading trained model for YOLO backend: {model_pt_path}")
+                else:
+                    model_to_load = yolo_config['model_size']
+                    logging.info(f"Loading fallback model for YOLO backend: {model_to_load}")
+
+                if self.yolo_backend.load_model(model_to_load):
                     # Initialize Reference Image Manager
                     try:
                         reference_data_dir = os.path.join(self.config.data_dir, 'references')
@@ -345,13 +352,16 @@ class ModernMainWindow:
         self.root.title("Vision Analysis System - Modern Interface")
         self.root.geometry("1400x900")
         self.root.minsize(1200, 800)
-        
+
         # Configure root window
         self.root.configure(bg=self.COLORS['bg_primary'])
-        
+
         # Configure grid weights for responsive layout
         self.root.grid_rowconfigure(1, weight=1)  # Main content area
         self.root.grid_columnconfigure(0, weight=1)
+
+        # Set up window close protocol to ensure proper cleanup
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
     
     def _setup_styles(self):
         """Setup custom styles for ttk widgets."""
@@ -1234,20 +1244,37 @@ class ModernMainWindow:
         """Stop the webcam stream."""
         try:
             self._is_streaming = False
-            
+
+            # Cancel any pending root.after callbacks by using root.after_cancel if we had after_ids
+            # Since we don't track after_ids, we'll rely on the widget validation in update methods
+
             if self._stream_thread and self._stream_thread.is_alive():
                 self._stream_thread.join(timeout=1.0)
-            
+
             if self.webcam_service:
                 self.webcam_service.close()
 
-            self.start_button.configure(state='normal')
-            self.stop_button.configure(state='disabled')
-            self.capture_button.configure(state='disabled')
-            
+            # Safely update UI elements only if they still exist
+            try:
+                if hasattr(self, 'start_button') and self.start_button and self.start_button.winfo_exists():
+                    self.start_button.configure(state='normal')
+                if hasattr(self, 'stop_button') and self.stop_button and self.stop_button.winfo_exists():
+                    self.stop_button.configure(state='disabled')
+                if hasattr(self, 'capture_button') and self.capture_button and self.capture_button.winfo_exists():
+                    self.capture_button.configure(state='disabled')
+            except tk.TclError:
+                # Buttons were destroyed, ignore
+                pass
+
             self._update_status("Stream stopped")
-            self.connection_label.configure(text="⚪ Disconnected", fg=self.COLORS['text_muted'])
-            
+
+            try:
+                if hasattr(self, 'connection_label') and self.connection_label and self.connection_label.winfo_exists():
+                    self.connection_label.configure(text="⚪ Disconnected", fg=self.COLORS['text_muted'])
+            except tk.TclError:
+                # Label was destroyed, ignore
+                pass
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to stop stream: {e}")
     
@@ -1313,11 +1340,27 @@ class ModernMainWindow:
     
     def _update_fps_display(self, fps):
         """Update the FPS display."""
-        self.fps_label.configure(text=f"FPS: {fps:.1f}")
+        try:
+            # Check if widget still exists and is valid
+            if hasattr(self, 'fps_label') and self.fps_label and self.fps_label.winfo_exists():
+                self.fps_label.configure(text=f"FPS: {fps:.1f}")
+        except tk.TclError:
+            # Widget was destroyed, ignore the update
+            pass
+        except Exception as e:
+            logging.error(f"Error updating FPS display: {e}")
     
     def _update_resolution_display(self, width, height):
         """Update the resolution display."""
-        self.resolution_label.configure(text=f"Resolution: {width}x{height}")
+        try:
+            # Check if widget still exists and is valid
+            if hasattr(self, 'resolution_label') and self.resolution_label and self.resolution_label.winfo_exists():
+                self.resolution_label.configure(text=f"Resolution: {width}x{height}")
+        except tk.TclError:
+            # Widget was destroyed, ignore the update
+            pass
+        except Exception as e:
+            logging.error(f"Error updating resolution display: {e}")
     
     @performance_timer("ui_display_image_on_canvas")
     def _display_image_on_canvas(self, canvas, image):
@@ -3048,6 +3091,8 @@ Tips:
         elif hasattr(self, '_messages_frame'):
             self._add_chat_message("System",
                 "Welcome! To enable AI chat, please configure your Gemini API key in Settings > Chatbot.")
+
+    def _on_window_close(self):
         """Clean up resources when closing the application."""
         logging.info("Starting application cleanup...")
 
@@ -3097,4 +3142,18 @@ Tips:
             except Exception as e:
                 logging.error(f"Failed to save config: {e}")
 
+        # Stop streaming and cleanup threads
+        try:
+            self._is_streaming = False
+            if hasattr(self, '_stream_thread') and self._stream_thread and self._stream_thread.is_alive():
+                self._stream_thread.join(timeout=2.0)
+        except Exception as e:
+            logging.error(f"Error stopping stream thread: {e}")
+
         logging.info("Application cleanup completed")
+
+        # Finally destroy the window
+        try:
+            self.root.destroy()
+        except Exception as e:
+            logging.error(f"Error destroying window: {e}")

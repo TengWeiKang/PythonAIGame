@@ -34,37 +34,55 @@ class InferenceService:
             print("[InferenceService] Ultralytics not found; using dummy detections when debug enabled.")
 
     def _attempt_load(self) -> None:
-        """Attempt layered loading: custom weights path -> configured model_size -> fallbacks."""
+        """Attempt focused model loading: prioritize 'model.pt' exclusively if it exists, otherwise use fallbacks."""
         candidates: List[str] = []
-        
-        # 1. Explicit weights path if file exists
+
+        # 1. Check for trained "model.pt" first and load EXCLUSIVELY if it exists
+        model_pt_path = os.path.join(self.config.models_dir, "model.pt")
+        if os.path.isfile(model_pt_path):
+            try:
+                print(f"[InferenceService] Found trained model: {model_pt_path}")
+                print(f"[InferenceService] Loading trained model exclusively...")
+                self.model = YOLO(model_pt_path)
+                self.loaded_source = model_pt_path
+                self.is_loaded = True
+                print(f"[InferenceService] Successfully loaded trained model: {model_pt_path}")
+                return
+            except Exception as e:
+                print(f"[InferenceService] Failed to load trained model {model_pt_path}: {e}")
+                raise ModelError(f"Failed to load trained model {model_pt_path}: {e}")
+
+        # 2. If no "model.pt" exists, fall back to original loading logic
+        print(f"[InferenceService] No trained model found at {model_pt_path}, using fallback models...")
+
+        # Explicit weights path if file exists
         if os.path.isfile(self.weights):
             candidates.append(self.weights)
-        
-        # 2. Configured model_size (e.g. yolo11n)
+
+        # Configured model_size (e.g. yolo11n)
         if self.config.model_size:
             candidates.append(self.config.model_size)
-        
-        # 3. Fallback list
+
+        # Fallback list
         candidates.extend(['yolo11n', 'yolov8n'])
-        
+
         tried = []
         for candidate in candidates:
             if candidate in tried:
                 continue
             tried.append(candidate)
-            
+
             try:
-                print(f"[InferenceService] Loading model: {candidate}")
+                print(f"[InferenceService] Loading fallback model: {candidate}")
                 self.model = YOLO(candidate)
                 self.loaded_source = candidate
                 self.is_loaded = True
-                print(f"[InferenceService] Successfully loaded: {candidate}")
+                print(f"[InferenceService] Successfully loaded fallback model: {candidate}")
                 return
             except Exception as e:
                 print(f"[InferenceService] Failed to load {candidate}: {e}")
                 continue
-        
+
         raise ModelError(f"Failed to load any model from candidates: {candidates}")
 
     def predict(self, frame: np.ndarray, conf_threshold: float = 0.5) -> List[Detection]:
@@ -131,14 +149,14 @@ class InferenceService:
         return detections
 
     def reload_model(self, new_weights_path: Optional[str] = None) -> bool:
-        """Reload the model with new weights."""
+        """Reload the model with new weights or refresh to load newly trained model.pt."""
         if new_weights_path:
             self.weights = new_weights_path
-        
+
         self.model = None
         self.loaded_source = None
         self.is_loaded = False
-        
+
         try:
             if HAS_ULTRALYTICS:
                 self._attempt_load()
@@ -146,7 +164,7 @@ class InferenceService:
         except Exception as e:
             print(f"[InferenceService] Failed to reload model: {e}")
             return False
-        
+
         return False
 
     def get_model_info(self) -> Dict[str, Any]:

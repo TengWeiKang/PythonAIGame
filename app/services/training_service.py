@@ -153,13 +153,14 @@ class TrainingService:
             if progress_callback:
                 progress_callback("Saving trained model...", 0.95)
             
-            # Save model to specified location or default location
+            # Save model to specified location or as "model.pt" in models directory
             if save_path:
                 save_path = Path(save_path)
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 final_model_path = save_path
             else:
-                final_model_path = models_dir / f"trained_model_{timestamp}.pt"
+                # Always save as "model.pt" to create focused model persistence
+                final_model_path = models_dir / "model.pt"
             
             # Copy the best model to the final location
             if best_model_path.exists():
