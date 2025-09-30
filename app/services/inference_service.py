@@ -1,183 +1,174 @@
-"""Enhanced inference service for model loading and prediction."""
-from __future__ import annotations
-import os
-import time
-import random
-from typing import List, Dict, Optional, Any
-import numpy as np
-from ..core.entities import Detection, BBox
-from ..core.exceptions import ModelError
-from ..utils.geometry import xywh_to_xyxy
-from ..config.settings import Config
+"""YOLO inference service for object detection."""
 
-# Try to import ultralytics if present
-HAS_ULTRALYTICS = False
-try:
-    from ultralytics import YOLO
-    HAS_ULTRALYTICS = True
-except ImportError:
-    HAS_ULTRALYTICS = False
+import logging
+from typing import Optional, List, Dict, Any
+import numpy as np
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
 
 class InferenceService:
-    """Enhanced model wrapper for object detection inference."""
-    
-    def __init__(self, config: Config, weights_path: Optional[str] = None):
-        self.config = config
-        self.weights = weights_path or os.path.join(config.models_dir, "best.pt")
-        self.model = None
-        self.loaded_source = None  # path or model name
-        self.is_loaded = False
-        
-        if HAS_ULTRALYTICS:
-            self._attempt_load()
-        else:
-            print("[InferenceService] Ultralytics not found; using dummy detections when debug enabled.")
+    """Service for YOLO model inference and object detection."""
 
-    def _attempt_load(self) -> None:
-        """Attempt focused model loading: prioritize 'model.pt' exclusively if it exists, otherwise use fallbacks."""
-        candidates: List[str] = []
+    def __init__(self, model_path: str = "yolo12n.pt", confidence_threshold: float = 0.5,
+                 iou_threshold: float = 0.45):
+        """Initialize inference service.
 
-        # 1. Check for trained "model.pt" first and load EXCLUSIVELY if it exists
-        model_pt_path = os.path.join(self.config.models_dir, "model.pt")
-        if os.path.isfile(model_pt_path):
-            try:
-                print(f"[InferenceService] Found trained model: {model_pt_path}")
-                print(f"[InferenceService] Loading trained model exclusively...")
-                self.model = YOLO(model_pt_path)
-                self.loaded_source = model_pt_path
-                self.is_loaded = True
-                print(f"[InferenceService] Successfully loaded trained model: {model_pt_path}")
-                return
-            except Exception as e:
-                print(f"[InferenceService] Failed to load trained model {model_pt_path}: {e}")
-                raise ModelError(f"Failed to load trained model {model_pt_path}: {e}")
+        Args:
+            model_path: Path to YOLO model file
+            confidence_threshold: Minimum confidence for detections
+            iou_threshold: IoU threshold for NMS
+        """
+        self.model_path = model_path
+        self.confidence_threshold = confidence_threshold
+        self.iou_threshold = iou_threshold
+        self._model = None
+        self._model_loaded = False
 
-        # 2. If no "model.pt" exists, fall back to original loading logic
-        print(f"[InferenceService] No trained model found at {model_pt_path}, using fallback models...")
+    def load_model(self) -> bool:
+        """Load YOLO model.
 
-        # Explicit weights path if file exists
-        if os.path.isfile(self.weights):
-            candidates.append(self.weights)
-
-        # Configured model_size (e.g. yolo11n)
-        if self.config.model_size:
-            candidates.append(self.config.model_size)
-
-        # Fallback list
-        candidates.extend(['yolo11n', 'yolov8n'])
-
-        tried = []
-        for candidate in candidates:
-            if candidate in tried:
-                continue
-            tried.append(candidate)
-
-            try:
-                print(f"[InferenceService] Loading fallback model: {candidate}")
-                self.model = YOLO(candidate)
-                self.loaded_source = candidate
-                self.is_loaded = True
-                print(f"[InferenceService] Successfully loaded fallback model: {candidate}")
-                return
-            except Exception as e:
-                print(f"[InferenceService] Failed to load {candidate}: {e}")
-                continue
-
-        raise ModelError(f"Failed to load any model from candidates: {candidates}")
-
-    def predict(self, frame: np.ndarray, conf_threshold: float = 0.5) -> List[Detection]:
-        """Run inference on frame and return detections."""
-        if not self.is_loaded or not self.model:
-            if self.config.debug:
-                return self._generate_dummy_detections(frame)
-            return []
-        
+        Returns:
+            True if model loaded successfully, False otherwise
+        """
         try:
-            results = self.model(frame, conf=conf_threshold, verbose=False)
-            detections = []
-            
-            for result in results:
-                if result.boxes is not None:
-                    for box in result.boxes:
-                        # Extract box data
-                        xyxy = box.xyxy[0].cpu().numpy()  # [x1, y1, x2, y2]
-                        conf = float(box.conf[0].cpu().numpy())
-                        cls = int(box.cls[0].cpu().numpy())
-                        
-                        # Convert to our format
-                        bbox: BBox = (int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3]))
-                        
-                        detection = Detection(
-                            class_id=cls,
-                            score=conf,
-                            bbox=bbox
-                        )
-                        detections.append(detection)
-            
-            return detections
-            
+            from ultralytics import YOLO
+
+            if not Path(self.model_path).exists():
+                logger.error(f"Model file not found: {self.model_path}")
+                return False
+
+            logger.info(f"Loading YOLO model: {self.model_path}")
+            self._model = YOLO(self.model_path)
+            self._model_loaded = True
+            logger.info("Model loaded successfully")
+            return True
+
+        except ImportError:
+            logger.error("Ultralytics package not installed. Install with: pip install ultralytics")
+            return False
         except Exception as e:
-            print(f"[InferenceService] Prediction error: {e}")
-            if self.config.debug:
-                return self._generate_dummy_detections(frame)
-            return []
-
-    def _generate_dummy_detections(self, frame: np.ndarray) -> List[Detection]:
-        """Generate dummy detections for testing when debug is enabled."""
-        if not self.config.debug:
-            return []
-        
-        h, w = frame.shape[:2]
-        detections = []
-        
-        # Generate 1-3 random detections
-        num_detections = random.randint(1, 3)
-        for i in range(num_detections):
-            # Random bbox
-            x1 = random.randint(0, w // 2)
-            y1 = random.randint(0, h // 2)
-            x2 = random.randint(x1 + 50, min(x1 + 200, w))
-            y2 = random.randint(y1 + 50, min(y1 + 200, h))
-            
-            detection = Detection(
-                class_id=random.randint(0, 79),  # COCO has 80 classes
-                score=random.uniform(0.5, 0.9),
-                bbox=(x1, y1, x2, y2)
-            )
-            detections.append(detection)
-        
-        return detections
-
-    def reload_model(self, new_weights_path: Optional[str] = None) -> bool:
-        """Reload the model with new weights or refresh to load newly trained model.pt."""
-        if new_weights_path:
-            self.weights = new_weights_path
-
-        self.model = None
-        self.loaded_source = None
-        self.is_loaded = False
-
-        try:
-            if HAS_ULTRALYTICS:
-                self._attempt_load()
-                return True
-        except Exception as e:
-            print(f"[InferenceService] Failed to reload model: {e}")
+            logger.error(f"Error loading model: {e}")
             return False
 
-        return False
+    def detect(self, image: np.ndarray) -> List[Dict[str, Any]]:
+        """Run object detection on image.
 
-    def get_model_info(self) -> Dict[str, Any]:
-        """Get information about the loaded model."""
-        return {
-            'has_ultralytics': HAS_ULTRALYTICS,
-            'is_loaded': self.is_loaded,
-            'loaded_source': self.loaded_source,
-            'weights_path': self.weights,
-            'model_type': type(self.model).__name__ if self.model else None
-        }
+        Args:
+            image: Input image as numpy array (BGR format)
 
-    def __del__(self):
-        """Cleanup resources."""
-        if self.model:
-            del self.model
+        Returns:
+            List of detection dictionaries with keys:
+                - class_name: Object class name
+                - confidence: Detection confidence (0-1)
+                - bbox: Bounding box [x1, y1, x2, y2]
+                - class_id: Class ID number
+        """
+        if not self._model_loaded:
+            logger.warning("Model not loaded, attempting to load...")
+            if not self.load_model():
+                return []
+
+        try:
+            # Run inference
+            results = self._model(
+                image,
+                conf=self.confidence_threshold,
+                iou=self.iou_threshold,
+                verbose=False
+            )
+
+            # Parse results
+            detections = []
+            if results and len(results) > 0:
+                result = results[0]
+
+                if result.boxes is not None and len(result.boxes) > 0:
+                    boxes = result.boxes.xyxy.cpu().numpy()
+                    confidences = result.boxes.conf.cpu().numpy()
+                    class_ids = result.boxes.cls.cpu().numpy().astype(int)
+
+                    for box, conf, cls_id in zip(boxes, confidences, class_ids):
+                        detection = {
+                            'class_name': result.names[cls_id],
+                            'confidence': float(conf),
+                            'bbox': box.tolist(),
+                            'class_id': int(cls_id)
+                        }
+                        detections.append(detection)
+
+            return detections
+
+        except Exception as e:
+            logger.error(f"Error during detection: {e}")
+            return []
+
+    def detect_with_visualization(self, image: np.ndarray) -> tuple[np.ndarray, List[Dict[str, Any]]]:
+        """Run detection and return annotated image.
+
+        Args:
+            image: Input image as numpy array
+
+        Returns:
+            Tuple of (annotated_image, detections_list)
+        """
+        detections = self.detect(image)
+        annotated_image = self._draw_detections(image.copy(), detections)
+        return annotated_image, detections
+
+    def _draw_detections(self, image: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
+        """Draw detection bounding boxes and labels on image.
+
+        Args:
+            image: Input image
+            detections: List of detection dictionaries
+
+        Returns:
+            Annotated image
+        """
+        import cv2
+
+        for det in detections:
+            bbox = det['bbox']
+            x1, y1, x2, y2 = map(int, bbox)
+            class_name = det['class_name']
+            confidence = det['confidence']
+
+            # Draw bounding box
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            # Draw label
+            label = f"{class_name}: {confidence:.2f}"
+            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+
+            # Draw label background
+            cv2.rectangle(image, (x1, y1 - label_size[1] - 10),
+                         (x1 + label_size[0], y1), (0, 255, 0), -1)
+
+            # Draw label text
+            cv2.putText(image, label, (x1, y1 - 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+        return image
+
+    def is_loaded(self) -> bool:
+        """Check if model is loaded.
+
+        Returns:
+            True if model is loaded, False otherwise
+        """
+        return self._model_loaded
+
+    def update_thresholds(self, confidence: Optional[float] = None,
+                         iou: Optional[float] = None):
+        """Update detection thresholds.
+
+        Args:
+            confidence: New confidence threshold (0-1)
+            iou: New IoU threshold (0-1)
+        """
+        if confidence is not None:
+            self.confidence_threshold = max(0.0, min(1.0, confidence))
+        if iou is not None:
+            self.iou_threshold = max(0.0, min(1.0, iou))

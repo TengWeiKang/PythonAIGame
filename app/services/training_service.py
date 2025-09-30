@@ -1,344 +1,369 @@
-"""Training service for model training operations."""
-from __future__ import annotations
-import os
-import yaml
-import shutil
-import threading
-import time
-from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Any, Callable
-from ..core.exceptions import ModelError
-from ..config.settings import Config
-from ..core.device_utils import DeviceDetector, detect_and_validate_device
+"""Training service for YOLO model training with custom objects."""
 
-# Try to import ultralytics if present
-HAS_ULTRALYTICS = False
-try:
-    from ultralytics import YOLO
-    HAS_ULTRALYTICS = True
-except ImportError:
-    HAS_ULTRALYTICS = False
+import logging
+import json
+from typing import Optional, Dict, Any, List, Callable
+from pathlib import Path
+import numpy as np
+import cv2
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+class TrainingObject:
+    """Represents a training object with image and metadata."""
+
+    def __init__(self, image: np.ndarray, label: str, bbox: Optional[tuple] = None,
+                 confirmed: bool = False, object_id: Optional[str] = None):
+        """Initialize training object.
+
+        Args:
+            image: Cropped object image
+            label: Object class label
+            bbox: Optional bounding box (x1, y1, x2, y2)
+            confirmed: Whether object is confirmed for training
+            object_id: Unique identifier
+        """
+        self.image = image
+        self.label = label
+        self.bbox = bbox
+        self.confirmed = confirmed
+        self.object_id = object_id or self._generate_id()
+        self.timestamp = datetime.now()
+
+    def _generate_id(self) -> str:
+        """Generate unique ID for object."""
+        return f"obj_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'object_id': self.object_id,
+            'label': self.label,
+            'bbox': self.bbox,
+            'confirmed': self.confirmed,
+            'timestamp': self.timestamp.isoformat()
+        }
+
 
 class TrainingService:
-    """Service for handling model training operations."""
-    
-    def __init__(self, config: Config):
-        self.config = config
-        self.model = None
-        self.training_in_progress = False
+    """Service for managing object training dataset and model training."""
 
-    def setup_training_config(self, dataset_path: str, class_names: list) -> str:
-        """Create YAML configuration file for training."""
-        config_path = os.path.join(self.config.data_dir, "training_config.yaml")
-        
-        training_config = {
-            'path': os.path.abspath(dataset_path),
-            'train': 'images/train',
-            'val': 'images/val',
-            'test': 'images/test',
-            'names': {i: name for i, name in enumerate(class_names)}
-        }
-        
-        with open(config_path, 'w') as f:
-            yaml.dump(training_config, f, default_flow_style=False)
-        
-        return config_path
+    def __init__(self, data_dir: str = "data/training"):
+        """Initialize training service.
 
-    def train_model_with_confirmed_objects(self,
-                                          object_training_service,
-                                          base_model: str = None,
-                                          epochs: Optional[int] = None,
-                                          batch_size: Optional[int] = None,
-                                          save_path: Optional[str] = None,
-                                          progress_callback: Optional[Callable[[str, float], None]] = None) -> Dict[str, Any]:
-        """
-        Train a YOLO model using only confirmed objects.
-        
         Args:
-            object_training_service: ObjectTrainingService instance
-            base_model: Base model path/name (e.g., 'yolo11n.pt')
+            data_dir: Base directory for training data
+        """
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        self.objects: List[TrainingObject] = []
+        self._load_objects()
+
+    def add_object(self, image: np.ndarray, label: str, bbox: Optional[tuple] = None,
+                   auto_confirm: bool = False) -> TrainingObject:
+        """Add object to training dataset.
+
+        Args:
+            image: Cropped object image
+            label: Object class label
+            bbox: Optional bounding box
+            auto_confirm: Whether to auto-confirm the object
+
+        Returns:
+            Created TrainingObject
+        """
+        obj = TrainingObject(image, label, bbox, confirmed=auto_confirm)
+        self.objects.append(obj)
+
+        # Save object image
+        self._save_object_image(obj)
+        self._save_metadata()
+
+        logger.info(f"Added training object: {obj.label} (ID: {obj.object_id})")
+        return obj
+
+    def get_object(self, object_id: str) -> Optional[TrainingObject]:
+        """Get object by ID.
+
+        Args:
+            object_id: Object identifier
+
+        Returns:
+            TrainingObject or None if not found
+        """
+        for obj in self.objects:
+            if obj.object_id == object_id:
+                return obj
+        return None
+
+    def update_object(self, object_id: str, label: Optional[str] = None,
+                     confirmed: Optional[bool] = None) -> bool:
+        """Update object properties.
+
+        Args:
+            object_id: Object identifier
+            label: New label (optional)
+            confirmed: New confirmed status (optional)
+
+        Returns:
+            True if updated successfully, False if object not found
+        """
+        obj = self.get_object(object_id)
+        if not obj:
+            return False
+
+        if label is not None:
+            old_label = obj.label
+            obj.label = label
+            logger.info(f"Updated object {object_id} label: {old_label} -> {label}")
+
+        if confirmed is not None:
+            obj.confirmed = confirmed
+            logger.info(f"Updated object {object_id} confirmed status: {confirmed}")
+
+        self._save_metadata()
+        return True
+
+    def delete_object(self, object_id: str) -> bool:
+        """Delete object from dataset.
+
+        Args:
+            object_id: Object identifier
+
+        Returns:
+            True if deleted successfully, False if object not found
+        """
+        obj = self.get_object(object_id)
+        if not obj:
+            return False
+
+        # Remove from list
+        self.objects.remove(obj)
+
+        # Delete image file
+        img_path = self.data_dir / f"{object_id}.png"
+        if img_path.exists():
+            img_path.unlink()
+
+        self._save_metadata()
+        logger.info(f"Deleted training object: {object_id}")
+        return True
+
+    def get_all_objects(self) -> List[TrainingObject]:
+        """Get all training objects.
+
+        Returns:
+            List of all TrainingObjects
+        """
+        return self.objects.copy()
+
+    def get_confirmed_objects(self) -> List[TrainingObject]:
+        """Get only confirmed training objects.
+
+        Returns:
+            List of confirmed TrainingObjects
+        """
+        return [obj for obj in self.objects if obj.confirmed]
+
+    def get_object_count(self) -> Dict[str, int]:
+        """Get count of objects by status.
+
+        Returns:
+            Dictionary with 'total', 'confirmed', 'unconfirmed' counts
+        """
+        confirmed = sum(1 for obj in self.objects if obj.confirmed)
+        return {
+            'total': len(self.objects),
+            'confirmed': confirmed,
+            'unconfirmed': len(self.objects) - confirmed
+        }
+
+    def export_dataset(self, export_dir: str, format: str = 'yolo') -> bool:
+        """Export confirmed objects as training dataset.
+
+        Args:
+            export_dir: Directory to export dataset
+            format: Dataset format ('yolo' or 'coco')
+
+        Returns:
+            True if exported successfully, False otherwise
+        """
+        try:
+            export_path = Path(export_dir)
+            export_path.mkdir(parents=True, exist_ok=True)
+
+            confirmed = self.get_confirmed_objects()
+            if not confirmed:
+                logger.warning("No confirmed objects to export")
+                return False
+
+            if format == 'yolo':
+                return self._export_yolo_format(export_path, confirmed)
+            else:
+                logger.error(f"Unsupported format: {format}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error exporting dataset: {e}")
+            return False
+
+    def _export_yolo_format(self, export_dir: Path, objects: List[TrainingObject]) -> bool:
+        """Export dataset in YOLO format.
+
+        Args:
+            export_dir: Export directory
+            objects: List of objects to export
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Create directory structure
+            images_dir = export_dir / "images" / "train"
+            labels_dir = export_dir / "labels" / "train"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            labels_dir.mkdir(parents=True, exist_ok=True)
+
+            # Get unique class labels
+            class_labels = sorted(list(set(obj.label for obj in objects)))
+            class_map = {label: idx for idx, label in enumerate(class_labels)}
+
+            # Export images and labels
+            for idx, obj in enumerate(objects):
+                # Save image
+                img_name = f"{idx:04d}.jpg"
+                img_path = images_dir / img_name
+                cv2.imwrite(str(img_path), obj.image)
+
+                # Create label file (center_x, center_y, width, height - normalized)
+                h, w = obj.image.shape[:2]
+                class_idx = class_map[obj.label]
+
+                # For cropped objects, bbox is the full image
+                label_path = labels_dir / f"{idx:04d}.txt"
+                with open(label_path, 'w') as f:
+                    # Full image bbox in normalized YOLO format
+                    f.write(f"{class_idx} 0.5 0.5 1.0 1.0\n")
+
+            # Create data.yaml
+            yaml_content = {
+                'path': str(export_dir.absolute()),
+                'train': 'images/train',
+                'val': 'images/train',  # Use same for validation
+                'names': {idx: label for label, idx in class_map.items()}
+            }
+
+            yaml_path = export_dir / "data.yaml"
+            with open(yaml_path, 'w') as f:
+                import yaml
+                yaml.dump(yaml_content, f)
+
+            logger.info(f"Exported {len(objects)} objects to {export_dir}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error in YOLO export: {e}")
+            return False
+
+    def train_model(self, base_model: str = "yolo12n.pt", epochs: int = 10,
+                   batch_size: int = 8, img_size: int = 640,
+                   progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> bool:
+        """Train YOLO model with confirmed objects.
+
+        Args:
+            base_model: Base YOLO model to fine-tune
             epochs: Number of training epochs
             batch_size: Training batch size
-            save_path: Path to save the final trained model
-            progress_callback: Callback for progress updates (message, progress)
-        
+            img_size: Image size for training
+            progress_callback: Optional callback for progress updates
+
         Returns:
-            Dict containing training results and model path
+            True if training completed successfully, False otherwise
         """
-        if not HAS_ULTRALYTICS:
-            raise ModelError("Ultralytics not available for training")
-        
-        if self.training_in_progress:
-            raise ModelError("Training already in progress")
-        
         try:
-            self.training_in_progress = True
-            
-            if progress_callback:
-                progress_callback("Checking confirmed objects...", 0.0)
-            
-            # Check if we have confirmed objects
-            confirmed_count = object_training_service.get_confirmed_count()
-            if confirmed_count == 0:
-                raise ModelError("No confirmed objects found. Please confirm some objects first.")
-            
-            # Export confirmed objects to YOLO format
-            if progress_callback:
-                progress_callback("Exporting confirmed objects...", 0.1)
-            
-            dataset_path = object_training_service.export_confirmed_dataset("yolo")
-            dataset_config_path = os.path.join(dataset_path, "dataset.yaml")
-            
-            if progress_callback:
-                progress_callback("Setting up training configuration...", 0.2)
-            
-            # Use config values or defaults
-            epochs = epochs or getattr(self.config, 'train_epochs', 50)
-            batch_size = batch_size or getattr(self.config, 'batch_size', 16)
-            base_model = base_model or getattr(self.config, 'model_size', 'yolo11n.pt')
-            
-            # Ensure models directory exists
-            models_dir = Path(getattr(self.config, 'models_dir', 'models'))
-            models_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Create unique training run name
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            training_name = f"training_run_{timestamp}"
-            
-            # Load base model
-            if progress_callback:
-                progress_callback("Loading base model...", 0.3)
-            
-            self.model = YOLO(base_model)
-            
-            # Detect and validate device
-            prefer_gpu = getattr(self.config, 'use_gpu', False)
-            device_info = DeviceDetector.detect_device(prefer_gpu)
-            selected_device = device_info.device
-            
-            # Log device selection information
-            device_info_str = DeviceDetector.get_device_info_string(device_info)
-            print(f"Training Device Detection: {device_info_str}")
-            
-            if progress_callback:
-                progress_callback(f"Using device: {device_info.device_name or selected_device}", 0.35)
-            
-            # Setup training parameters
-            train_args = {
-                'data': dataset_config_path,
-                'epochs': epochs,
-                'batch': batch_size,
-                'imgsz': getattr(self.config, 'img_size', 640),
-                'device': selected_device,
-                'project': str(models_dir),
-                'name': training_name,
-                'save': True,
-                'save_period': max(1, epochs // 10),  # Save every 10% of epochs
-                'patience': 50,  # Early stopping patience
-                'verbose': True
-            }
-            
-            if progress_callback:
-                progress_callback("Starting model training...", 0.4)
-            
-            # Start training with progress tracking
-            results = self._train_with_progress_tracking(train_args, progress_callback)
-            
-            # Get the best model path
-            training_run_dir = models_dir / training_name
-            best_model_path = training_run_dir / "weights" / "best.pt"
-            last_model_path = training_run_dir / "weights" / "last.pt"
-            
-            if progress_callback:
-                progress_callback("Saving trained model...", 0.95)
-            
-            # Save model to specified location or as "model.pt" in models directory
-            if save_path:
-                save_path = Path(save_path)
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                final_model_path = save_path
-            else:
-                # Always save as "model.pt" to create focused model persistence
-                final_model_path = models_dir / "model.pt"
-            
-            # Copy the best model to the final location
-            if best_model_path.exists():
-                shutil.copy2(best_model_path, final_model_path)
-                model_used = "best"
-            elif last_model_path.exists():
-                shutil.copy2(last_model_path, final_model_path)
-                model_used = "last"
-            else:
-                raise ModelError("No trained model weights found")
-            
-            if progress_callback:
-                progress_callback("Training completed successfully!", 1.0)
-            
-            return {
-                'success': True,
-                'model_path': str(final_model_path),
-                'training_dir': str(training_run_dir),
-                'dataset_path': dataset_path,
-                'epochs_completed': epochs,
-                'confirmed_objects_count': confirmed_count,
-                'model_used': model_used,
-                'results': results
-            }
-            
-        except Exception as e:
-            error_msg = f"Training failed: {e}"
-            if progress_callback:
-                progress_callback(error_msg, -1.0)
-            raise ModelError(error_msg)
-        
-        finally:
-            self.training_in_progress = False
-    
-    def _train_with_progress_tracking(self, train_args: Dict[str, Any], 
-                                    progress_callback: Optional[Callable[[str, float], None]] = None):
-        """Train model with progress tracking."""
-        
-        # Custom callback class to track training progress
-        class ProgressTracker:
-            def __init__(self, epochs, callback):
-                self.epochs = epochs
-                self.callback = callback
-                self.current_epoch = 0
-                
-            def on_train_epoch_end(self, trainer):
-                self.current_epoch += 1
-                if self.callback:
-                    progress = 0.4 + (self.current_epoch / self.epochs) * 0.5  # 40% to 90%
-                    self.callback(f"Training epoch {self.current_epoch}/{self.epochs}...", progress)
-        
-        # Start training
-        results = self.model.train(**train_args)
-        return results
+            from ultralytics import YOLO
 
-    def train_model(self, 
-                   dataset_config_path: str,
-                   base_model: str = None,
-                   epochs: Optional[int] = None,
-                   batch_size: Optional[int] = None,
-                   progress_callback: Optional[Callable[[str, float], None]] = None) -> bool:
-        """Train a new model (legacy method for backward compatibility)."""
-        if not HAS_ULTRALYTICS:
-            raise ModelError("Ultralytics not available for training")
-        
-        if self.training_in_progress:
-            raise ModelError("Training already in progress")
-        
-        try:
-            self.training_in_progress = True
-            
-            # Use config values or defaults
-            epochs = epochs or getattr(self.config, 'train_epochs', 50)
-            batch_size = batch_size or getattr(self.config, 'batch_size', 16)
-            base_model = base_model or getattr(self.config, 'model_size', 'yolo11n.pt')
-            
+            # Export dataset first
+            dataset_dir = self.data_dir / "exported_dataset"
+            if not self.export_dataset(str(dataset_dir)):
+                return False
+
             # Load base model
-            self.model = YOLO(base_model)
-            
-            # Detect and validate device
-            prefer_gpu = getattr(self.config, 'use_gpu', False)
-            device_info = DeviceDetector.detect_device(prefer_gpu)
-            selected_device = device_info.device
-            
-            # Log device selection information
-            device_info_str = DeviceDetector.get_device_info_string(device_info)
-            print(f"Training Device Detection: {device_info_str}")
-            
-            # Setup training parameters
-            train_args = {
-                'data': dataset_config_path,
-                'epochs': epochs,
-                'batch': batch_size,
-                'imgsz': getattr(self.config, 'img_size', 640),
-                'device': selected_device,
-                'project': getattr(self.config, 'models_dir', 'models'),
-                'name': 'training_run',
-                'save': True,
-                'save_period': max(1, epochs // 10)  # Save every 10% of epochs
-            }
-            
-            if progress_callback:
-                progress_callback("Starting training...", 0.0)
-            
+            logger.info(f"Loading base model: {base_model}")
+            model = YOLO(base_model)
+
+            # Prepare training arguments
+            data_yaml = dataset_dir / "data.yaml"
+
             # Start training
-            results = self.model.train(**train_args)
-            
-            if progress_callback:
-                progress_callback("Training completed!", 1.0)
-            
+            logger.info("Starting model training...")
+            results = model.train(
+                data=str(data_yaml),
+                epochs=epochs,
+                batch=batch_size,
+                imgsz=img_size,
+                verbose=True,
+                project='runs/detect',
+                name='train'
+            )
+
+            logger.info("Training completed successfully")
             return True
-            
-        except Exception as e:
-            if progress_callback:
-                progress_callback(f"Training failed: {e}", -1.0)
-            raise ModelError(f"Training failed: {e}")
-        
-        finally:
-            self.training_in_progress = False
 
-    def validate_model(self, model_path: str, dataset_config_path: str) -> Dict[str, Any]:
-        """Validate a trained model."""
-        if not HAS_ULTRALYTICS:
-            raise ModelError("Ultralytics not available for validation")
-        
-        try:
-            model = YOLO(model_path)
-            results = model.val(data=dataset_config_path)
-            
-            # Extract key metrics
-            metrics = {
-                'map50': float(results.box.map50),
-                'map': float(results.box.map),
-                'precision': float(results.box.mp),
-                'recall': float(results.box.mr),
-            }
-            
-            return metrics
-            
-        except Exception as e:
-            raise ModelError(f"Validation failed: {e}")
-
-    def export_model(self, model_path: str, format: str = 'onnx') -> str:
-        """Export model to different format."""
-        if not HAS_ULTRALYTICS:
-            raise ModelError("Ultralytics not available for export")
-        
-        try:
-            model = YOLO(model_path)
-            exported_path = model.export(format=format)
-            return exported_path
-            
-        except Exception as e:
-            raise ModelError(f"Export failed: {e}")
-
-    def is_training(self) -> bool:
-        """Check if training is currently in progress."""
-        return self.training_in_progress
-
-    def stop_training(self) -> None:
-        """Stop current training (if possible)."""
-        # Note: YOLO doesn't provide a direct way to stop training
-        # This is a placeholder for future implementation
-        self.training_in_progress = False
-
-    def get_training_history(self) -> Dict[str, Any]:
-        """Get training history from the last run."""
-        results_path = os.path.join(self.config.models_dir, 'training_run', 'results.csv')
-        
-        if not os.path.exists(results_path):
-            return {}
-        
-        try:
-            import pandas as pd
-            df = pd.read_csv(results_path)
-            return df.to_dict('records')
         except ImportError:
-            # If pandas not available, return basic info
-            return {'message': 'Training history available in CSV format'}
+            logger.error("Ultralytics package not installed")
+            return False
         except Exception as e:
-            return {'error': str(e)}
+            logger.error(f"Error during training: {e}")
+            return False
+
+    def _save_object_image(self, obj: TrainingObject):
+        """Save object image to disk.
+
+        Args:
+            obj: TrainingObject to save
+        """
+        img_path = self.data_dir / f"{obj.object_id}.png"
+        cv2.imwrite(str(img_path), obj.image)
+
+    def _save_metadata(self):
+        """Save objects metadata to JSON file."""
+        metadata = {
+            'objects': [obj.to_dict() for obj in self.objects]
+        }
+
+        metadata_path = self.data_dir / "metadata.json"
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+    def _load_objects(self):
+        """Load objects from disk on initialization."""
+        metadata_path = self.data_dir / "metadata.json"
+        if not metadata_path.exists():
+            return
+
+        try:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+
+            for obj_data in metadata.get('objects', []):
+                img_path = self.data_dir / f"{obj_data['object_id']}.png"
+                if img_path.exists():
+                    image = cv2.imread(str(img_path))
+                    if image is not None:
+                        obj = TrainingObject(
+                            image=image,
+                            label=obj_data['label'],
+                            bbox=obj_data.get('bbox'),
+                            confirmed=obj_data.get('confirmed', False),
+                            object_id=obj_data['object_id']
+                        )
+                        self.objects.append(obj)
+
+            logger.info(f"Loaded {len(self.objects)} training objects")
+
+        except Exception as e:
+            logger.error(f"Error loading objects: {e}")
