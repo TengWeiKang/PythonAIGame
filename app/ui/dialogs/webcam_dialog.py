@@ -2,7 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk, messagebox
-from typing import Optional
+import cv2
 
 from ...config.settings import Config
 from ...services.webcam_service import WebcamService

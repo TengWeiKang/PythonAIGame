@@ -14,7 +14,6 @@ import numpy as np
 
 from .base_service import FullFeaturedService, BaseService
 from .exceptions import ModelError, ValidationError, ServiceError
-from .performance import performance_timer
 from ..utils.validation import InputValidator, ContentFilter
 
 
@@ -418,10 +417,8 @@ class ImageProcessingServiceBase(AIServiceBase):
 
     def _generate_prediction_cache_key(self, image: np.ndarray, *args, **kwargs) -> str:
         """Generate cache key for image prediction."""
-        from ..core.cache_manager import generate_image_hash
-
-        # Generate hash for image
-        image_hash = generate_image_hash(image)
+        # Generate simple hash for image using md5 of image data
+        image_hash = hashlib.md5(image.tobytes()).hexdigest()
 
         # Include other arguments
         other_args = str(args[1:]) + str(sorted(kwargs.items())) if len(args) > 1 or kwargs else ""

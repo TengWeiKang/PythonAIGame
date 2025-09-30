@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from contextlib import contextmanager
 
 from .exceptions import ServiceError, ValidationError, ConfigError
-from .performance import performance_timer, PerformanceMonitor
 from ..config.settings import Config
 
 # Type variables for generic service implementations
@@ -94,12 +93,9 @@ class BaseService(abc.ABC):
         self._health_check_interval = 30.0  # seconds
         self._last_health_check = 0.0
 
-        # Performance monitoring
-        self._performance_monitor = PerformanceMonitor.instance()
+        # Service metrics
         self._operation_counters: Dict[str, int] = {}
         self._error_counters: Dict[str, int] = {}
-
-        # Service metrics
         self._start_time: Optional[float] = None
         self._total_operations = 0
         self._successful_operations = 0
@@ -351,13 +347,6 @@ class BaseService(abc.ABC):
             self._last_error = e
             raise
 
-        finally:
-            duration = time.time() - start_time
-            self._performance_monitor.record_operation_time(
-                f"{self._service_name}.{operation_name}",
-                duration
-            )
-
     # Abstract methods that subclasses must implement
     @abc.abstractmethod
     def _initialize(self) -> None:
@@ -498,12 +487,12 @@ class AsyncServiceMixin:
 
 
 class CacheableServiceMixin:
-    """Mixin for services that need caching functionality."""
+    """Mixin for services that need simple caching functionality."""
 
     def __init__(self, cache_size: int = 100, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        from .cache_manager import LRUCache
-        self._cache = LRUCache(max_size=cache_size)
+        self._cache: Dict[str, Any] = {}
+        self._cache_max_size = cache_size
         self._cache_hits = 0
         self._cache_misses = 0
 
@@ -530,7 +519,12 @@ class CacheableServiceMixin:
             key: Cache key
             value: Value to cache
         """
-        self._cache.put(key, value)
+        # Simple size-limited cache
+        if len(self._cache) >= self._cache_max_size:
+            # Remove first item (simplest eviction strategy)
+            first_key = next(iter(self._cache))
+            del self._cache[first_key]
+        self._cache[key] = value
 
     def _clear_cache(self) -> None:
         """Clear the cache."""
@@ -548,7 +542,7 @@ class CacheableServiceMixin:
 
         return {
             'cache_size': len(self._cache),
-            'max_size': self._cache.max_size,
+            'max_size': self._cache_max_size,
             'cache_hits': self._cache_hits,
             'cache_misses': self._cache_misses,
             'hit_rate': hit_rate

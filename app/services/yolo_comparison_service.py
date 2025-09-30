@@ -17,11 +17,55 @@ import cv2
 
 from ..core.entities import Detection, BBox
 from ..core.exceptions import DetectionError, WebcamError
-from ..core.performance import performance_timer, LRUCache
+# Performance monitoring removed for simplification
 from ..backends.yolo_backend import YoloBackend
 from .gemini_service import AsyncGeminiService
 
 logger = logging.getLogger(__name__)
+
+
+# Simple LRU Cache implementation
+class LRUCache:
+    """Simple Least Recently Used cache."""
+
+    def __init__(self, max_size: int = 100):
+        from collections import OrderedDict
+        self.cache = OrderedDict()
+        self.max_size = max_size
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, key: str):
+        """Get item from cache."""
+        if key in self.cache:
+            self._hits += 1
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        self._misses += 1
+        return None
+
+    def put(self, key: str, value):
+        """Put item in cache."""
+        if key in self.cache:
+            # Move to end
+            self.cache.move_to_end(key)
+        else:
+            self.cache[key] = value
+            # Remove oldest if cache is full
+            if len(self.cache) > self.max_size:
+                self.cache.popitem(last=False)
+
+    def clear(self):
+        """Clear the cache."""
+        self.cache.clear()
+        self._hits = 0
+        self._misses = 0
+
+    @property
+    def _cache(self):
+        """Provide _cache property for compatibility."""
+        return self.cache
 
 @dataclass
 class ObjectComparison:
@@ -106,7 +150,6 @@ class YoloComparisonService:
             'last_comparison_time': None
         }
 
-    @performance_timer("yolo_comparison_set_reference")
     def set_reference_image(self, reference_image: np.ndarray) -> bool:
         """
         Set the reference image for comparison.
@@ -147,7 +190,6 @@ class YoloComparisonService:
             self._reference_frame_dimensions = None
             raise DetectionError(f"Failed to set reference image: {e}")
 
-    @performance_timer("yolo_comparison_compare")
     def compare_with_current(self, current_image: np.ndarray, user_message: str = "") -> YoloComparisonResult:
         """
         Compare current image with the reference image.
@@ -712,15 +754,6 @@ class YoloComparisonService:
                 }
                 for det in self._reference_detections
             ]
-        }
-
-    def get_performance_stats(self) -> Dict[str, Any]:
-        """Get performance statistics for the service."""
-        return {
-            **self._stats,
-            'cache_size': len(self._comparison_cache._cache),
-            'cache_hit_rate': (self._stats['cache_hits'] / max(1, self._stats['comparisons_performed'])) * 100,
-            'reference_set': self._reference_detections is not None
         }
 
     def clear_cache(self) -> None:

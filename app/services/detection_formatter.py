@@ -24,7 +24,7 @@ from enum import Enum
 import json
 
 from ..core.entities import Detection, ComparisonMetrics, BBox
-from ..core.performance import performance_timer
+# Performance monitoring removed for simplification
 from ..utils.validation import InputValidator, ValidationError, validate_user_prompt
 from ..config.settings import Config
 
@@ -144,7 +144,6 @@ class DetectionDataFormatter:
             AnalysisType.CUSTOM: self._get_custom_template(),
         }
 
-    @performance_timer("detection_formatter_format_for_gemini")
     def format_for_gemini(self,
                          user_message: str,
                          current_detections: List[Detection],

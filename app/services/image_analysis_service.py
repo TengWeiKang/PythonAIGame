@@ -165,7 +165,7 @@ class ImageAnalysisService:
         try:
             # Use existing inference service
             if self.inference_service and self.inference_service.is_loaded:
-                detections = self.inference_service.predict(frame, confidence_threshold=0.3)
+                detections = self.inference_service.predict(frame, conf_threshold=0.3)
 
                 for detection in detections:
                     # Calculate position information

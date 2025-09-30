@@ -31,8 +31,6 @@ except ImportError:
     SDK_AVAILABLE = False
 
 from ..core.exceptions import WebcamError
-from ..core.performance import performance_timer, LRUCache, ThreadPool
-from ..core.cache_manager import generate_image_hash
 from ..utils.validation import (
     InputValidator,
     ContentFilter,
@@ -80,20 +78,15 @@ class GeminiService:
         self._min_request_interval = 1.0  # Minimum seconds between requests
         self._rate_limit_enabled = True
         self._requests_per_minute = 15
-        
-        # Performance optimizations
-        self._response_cache = LRUCache(max_size=100)  # Cache API responses
-        self._image_hash_cache = LRUCache(max_size=200)  # Cache image hashes
+
+        # Simple response cache
+        self._response_cache: Dict[str, str] = {}
+        self._cache_max_size = 100
+
+        # Request management
         self._request_queue = []
         self._batch_size = 3
         self._batch_timeout = 2.0  # seconds
-        
-        # Thread pool for async operations
-        self._thread_pool = ThreadPool(max_workers=2, thread_name_prefix="Gemini")
-        
-        # Connection pooling for better performance
-        self._session_pool = []
-        self._max_sessions = 3
         
         # Check SDK availability
         if not SDK_AVAILABLE:
@@ -271,7 +264,6 @@ class GeminiService:
             logger.error(f"Failed to start chat session: {e}")
             raise WebcamError(f"Failed to start chat session: {e}")
     
-    @performance_timer("gemini_send_message")
     def send_message(self, message: str, image_data: Optional[bytes] = None) -> str:
         """Send message with optional image to Gemini with caching.
 
@@ -307,9 +299,8 @@ class GeminiService:
         cache_key = self._generate_cache_key(sanitized_message, image_data)
 
         # Try to get from cache first
-        cached_response = self._response_cache.get(cache_key)
-        if cached_response is not None:
-            return cached_response
+        if cache_key in self._response_cache:
+            return self._response_cache[cache_key]
 
         if not self.chat_session:
             self.start_chat_session(self.persona)
@@ -332,10 +323,14 @@ class GeminiService:
             
             self._last_request_time = time.time()
             result = response.text
-            
+
             # Cache the response
-            self._response_cache.put(cache_key, result)
-            
+            if len(self._response_cache) >= self._cache_max_size:
+                # Remove first item when cache is full
+                first_key = next(iter(self._response_cache))
+                del self._response_cache[first_key]
+            self._response_cache[cache_key] = result
+
             return result
             
         except ValidationError:
@@ -398,8 +393,7 @@ class GeminiService:
         except Exception as e:
             logger.error(f"Content generation failed: {e}")
             raise WebcamError(f"Content generation failed: {e}")
-    
-    @performance_timer("gemini_analyze_image")
+
     def analyze_single_image(self, image: np.ndarray, prompt: str = None) -> str:
         """Analyze a single image with optional custom prompt.
 
@@ -434,26 +428,27 @@ class GeminiService:
             sanitized_prompt = ContentFilter.filter_sensitive_content(sanitized_prompt)
 
         # Generate cache key for image analysis
-        image_hash = generate_image_hash(image)
+        image_hash = hashlib.md5(image.tobytes()).hexdigest()
         cache_key = f"analyze:{image_hash}:{hashlib.md5(sanitized_prompt.encode()).hexdigest()}"
-        
+
         # Try cache first
-        cached_result = self._response_cache.get(cache_key)
-        if cached_result is not None:
-            return cached_result
+        if cache_key in self._response_cache:
+            return self._response_cache[cache_key]
         
         pil_image = self._numpy_to_pil(image)
         contents = [sanitized_prompt, pil_image]
 
         result = self._generate_content(contents)
-        
+
         # Cache result
-        self._response_cache.put(cache_key, result)
-        
+        if len(self._response_cache) >= self._cache_max_size:
+            first_key = next(iter(self._response_cache))
+            del self._response_cache[first_key]
+        self._response_cache[cache_key] = result
+
         return result
     
-    @performance_timer("gemini_compare_images")
-    def compare_images(self, reference_image: np.ndarray, current_image: np.ndarray, 
+    def compare_images(self, reference_image: np.ndarray, current_image: np.ndarray,
                       custom_prompt: str = None) -> str:
         """Compare two images and return detailed analysis of differences."""
         if custom_prompt is None:
@@ -467,15 +462,14 @@ class GeminiService:
             Provide a detailed, structured analysis of the differences you observe."""
         
         # Generate cache key for image comparison
-        ref_hash = generate_image_hash(reference_image)
-        cur_hash = generate_image_hash(current_image)
+        ref_hash = hashlib.md5(reference_image.tobytes()).hexdigest()
+        cur_hash = hashlib.md5(current_image.tobytes()).hexdigest()
         prompt_hash = hashlib.md5(custom_prompt.encode()).hexdigest()
         cache_key = f"compare:{ref_hash}:{cur_hash}:{prompt_hash}"
-        
+
         # Try cache first
-        cached_result = self._response_cache.get(cache_key)
-        if cached_result is not None:
-            return cached_result
+        if cache_key in self._response_cache:
+            return self._response_cache[cache_key]
         
         reference_pil = self._numpy_to_pil(reference_image)
         current_pil = self._numpy_to_pil(current_image)
@@ -487,14 +481,17 @@ class GeminiService:
             current_pil,
             custom_prompt
         ]
-        
+
         result = self._generate_content(contents)
-        
+
         # Cache result
-        self._response_cache.put(cache_key, result)
-        
+        if len(self._response_cache) >= self._cache_max_size:
+            first_key = next(iter(self._response_cache))
+            del self._response_cache[first_key]
+        self._response_cache[cache_key] = result
+
         return result
-    
+
     def generate_difference_highlights(self, reference_image: np.ndarray, 
                                      current_image: np.ndarray) -> Tuple[str, Dict[str, Any]]:
         """Generate difference analysis with suggested highlight regions."""

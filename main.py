@@ -18,9 +18,7 @@ sys.path.insert(0, str(current_dir))
 from app.config.settings import load_config, Config
 from app.utils.geometry import ensure_dirs
 from app.core.exceptions import ApplicationError, ConfigError
-from app.core.performance import PerformanceMonitor
 from app.core.logging_config import configure_logging, get_logger, set_correlation_id, CorrelationContext, log_security_event
-from app.core.health_monitor import get_health_monitor, setup_default_health_checks
 
 
 def setup_logging(config: Config) -> None:
@@ -107,13 +105,6 @@ def create_main_window(config: Config) -> tk.Tk:
             """Handle application shutdown with proper resource cleanup."""
             try:
                 logging.info("Application shutdown initiated")
-
-                # Stop performance monitoring
-                try:
-                    PerformanceMonitor.instance().stop()
-                except Exception as e:
-                    logger = get_logger(__name__)
-                    logger.warning(f"Failed to stop performance monitoring: {e}")
 
                 # Cleanup application resources
                 if hasattr(app, '_is_streaming'):
@@ -365,31 +356,6 @@ def main() -> int:
 
         finally:
             # Ensure cleanup happens
-            try:
-                # Stop health monitoring
-                health_monitor = get_health_monitor()
-                if health_monitor:
-                    health_monitor.stop()
-                logger = get_logger(__name__)
-                logger.info("Health monitoring stopped")
-            except Exception as cleanup_error:
-                logger = get_logger(__name__)
-                logger.warning("Error stopping health monitoring", extra={
-                    'cleanup_error': str(cleanup_error),
-                    'correlation_id': correlation_id
-                })
-
-            try:
-                PerformanceMonitor.instance().stop()
-                logger = get_logger(__name__)
-                logger.info("Performance monitoring stopped")
-            except Exception as cleanup_error:
-                logger = get_logger(__name__)
-                logger.warning("Error stopping performance monitoring", extra={
-                    'cleanup_error': str(cleanup_error),
-                    'correlation_id': correlation_id
-                })
-
             logger = get_logger(__name__)
             logger.info("Application exiting", extra={
                 'exit_code': exit_code,

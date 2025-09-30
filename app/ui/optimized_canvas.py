@@ -8,14 +8,73 @@ from PIL import Image, ImageTk
 import threading
 import time
 import logging
+import hashlib
 from typing import Optional, Tuple, Callable, Any
-from collections import deque
-
-from ..core.performance import performance_timer, LRUCache, PerformanceMonitor
-from ..core.cache_manager import generate_image_hash
+from collections import deque, OrderedDict
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
+
+
+# Simple LRU Cache implementation
+class LRUCache:
+    """Simple Least Recently Used cache."""
+
+    def __init__(self, max_size: int = 100):
+        self.cache = OrderedDict()
+        self.max_size = max_size
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, key: str):
+        """Get item from cache."""
+        if key in self.cache:
+            self._hits += 1
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        self._misses += 1
+        return None
+
+    def put(self, key: str, value):
+        """Put item in cache."""
+        if key in self.cache:
+            # Move to end
+            self.cache.move_to_end(key)
+        else:
+            self.cache[key] = value
+            # Remove oldest if cache is full
+            if len(self.cache) > self.max_size:
+                self.cache.popitem(last=False)
+
+    def clear(self):
+        """Clear the cache."""
+        self.cache.clear()
+
+    def stats(self):
+        """Get cache statistics."""
+        class Stats:
+            def __init__(self, hits, misses, size):
+                self.hits = hits
+                self.misses = misses
+                self.size = size
+                total = hits + misses
+                self.hit_rate = hits / total if total > 0 else 0
+
+        return Stats(self._hits, self._misses, len(self.cache))
+
+
+# Simple image hash function
+def generate_image_hash(image: np.ndarray) -> str:
+    """Generate a hash for an image."""
+    try:
+        # Use a sample of the image data for performance
+        sample = image[::10, ::10].tobytes()
+        return hashlib.md5(sample).hexdigest()
+    except Exception:
+        # Fallback to simple hash
+        return str(hash(image.tobytes()[:1000]))
+
 
 class OptimizedCanvas(Canvas):
     """High-performance canvas with optimized image rendering."""
@@ -42,11 +101,6 @@ class OptimizedCanvas(Canvas):
         
         # Bind resize event for cache invalidation
         self.bind('<Configure>', self._on_canvas_resize)
-        
-        # Register with performance monitor
-        monitor = PerformanceMonitor.instance()
-        monitor.register_cache("canvas_image", self._image_cache)
-        monitor.register_cache("canvas_resize", self._resize_cache)
     
     def _on_canvas_resize(self, event):
         """Handle canvas resize events."""
@@ -64,7 +118,6 @@ class OptimizedCanvas(Canvas):
             self._image_cache.clear()
             self._resize_cache.clear()
     
-    @performance_timer("canvas_display_image")
     def display_image_optimized(self, image: np.ndarray, clear_canvas: bool = True) -> bool:
         """Display image with optimizations."""
         if image is None:
@@ -306,7 +359,6 @@ class VideoCanvas(OptimizedCanvas):
         self._max_dropped_consecutive = 2
         self._consecutive_drops = 0
     
-    @performance_timer("video_canvas_display")
     def display_frame(self, frame: np.ndarray) -> bool:
         """Display video frame with frame rate control."""
         current_time = time.time()
@@ -324,13 +376,7 @@ class VideoCanvas(OptimizedCanvas):
         # Display frame
         success = self.display_image_optimized(frame)
         self._last_frame_time = current_time
-        
-        # Record performance metrics
-        if self._total_frames % 30 == 0:  # Every 30 frames
-            drop_rate = self._dropped_frames / self._total_frames
-            monitor = PerformanceMonitor.instance()
-            monitor.record_operation_time("video_frame_drop_rate", drop_rate)
-        
+
         return success
     
     def _should_drop_frame(self, current_time: float) -> bool:
@@ -339,47 +385,13 @@ class VideoCanvas(OptimizedCanvas):
         time_since_last = current_time - self._last_frame_time
         if time_since_last >= self._frame_interval:
             return False
-        
+
         # Don't drop too many consecutive frames
         if self._consecutive_drops >= self._max_dropped_consecutive:
             return False
-        
-        # Check system performance
-        monitor = PerformanceMonitor.instance()
-        current_metrics = monitor.get_current_metrics()
-        
-        if current_metrics:
-            # Drop frame if CPU usage is high
-            if current_metrics.cpu_percent > 80:
-                return True
-            
-            # Drop frame if memory usage is high
-            if current_metrics.memory_percent > 85:
-                return True
-        
+
         return False
     
-    def get_performance_stats(self) -> dict:
-        """Get video performance statistics."""
-        stats = self.get_cache_stats()
-        
-        if self._total_frames > 0:
-            drop_rate = self._dropped_frames / self._total_frames
-            effective_fps = self.target_fps * (1 - drop_rate)
-        else:
-            drop_rate = 0
-            effective_fps = 0
-        
-        stats['video'] = {
-            'target_fps': self.target_fps,
-            'effective_fps': effective_fps,
-            'total_frames': self._total_frames,
-            'dropped_frames': self._dropped_frames,
-            'drop_rate': drop_rate
-        }
-        
-        return stats
-
 class ChatCanvas(Canvas):
     """Optimized canvas for chat message rendering."""
     

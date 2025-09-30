@@ -91,17 +91,9 @@ class ModernMainWindowPatches:
 
     @staticmethod
     def patch_update_cache_display(instance):
-        """Safe version of _update_cache_display."""
-        try:
-            # Safe cache manager access
-            if not hasattr(instance, 'cache_manager') or instance.cache_manager is None:
-                return
-
-            cache_stats = instance.cache_manager.get_stats()
-            # Update UI with cache stats
-
-        except Exception as e:
-            logger.debug(f"Error updating cache display: {e}")
+        """Safe version of _update_cache_display - removed cache manager dependency."""
+        # Cache manager has been removed from the system
+        pass
 
     @staticmethod
     def patch_update_objects_list(instance):
@@ -150,55 +142,6 @@ class ModernMainWindowPatches:
 
         except Exception as e:
             logger.error(f"Error saving configuration: {e}")
-
-
-def apply_all_patches(window_class):
-    """Apply all safety patches to ModernMainWindow class.
-
-    Args:
-        window_class: The ModernMainWindow class to patch
-
-    Returns:
-        Patched class
-    """
-    # Import service_fixes for mixins
-    from .service_fixes import (
-        SafeServiceMixin,
-        patch_process_chat_message,
-        patch_analyze_single_image,
-        patch_compare_images,
-        safe_cleanup_destructor
-    )
-
-    # Add mixin to class hierarchy
-    if SafeServiceMixin not in window_class.__bases__:
-        window_class.__bases__ = (SafeServiceMixin,) + window_class.__bases__
-
-    # Patch critical methods
-    original_process_chat = window_class._process_chat_message
-    window_class._process_chat_message = patch_process_chat_message(original_process_chat)
-
-    original_analyze = getattr(window_class, '_analyze_single_image', None)
-    if original_analyze:
-        window_class._analyze_single_image = patch_analyze_single_image(original_analyze)
-
-    original_compare = getattr(window_class, '_compare_images', None)
-    if original_compare:
-        window_class._compare_images = patch_compare_images(original_compare)
-
-    # Replace destructor with safe version
-    window_class.__del__ = safe_cleanup_destructor
-
-    # Apply other patches
-    window_class._safe_on_start_stream = lambda self: ModernMainWindowPatches.patch_on_start_stream(self)
-    window_class._safe_on_stop_stream = lambda self: ModernMainWindowPatches.patch_on_stop_stream(self)
-    window_class._safe_stream_worker = lambda self: ModernMainWindowPatches.patch_stream_worker(self)
-    window_class._safe_update_cache_display = lambda self: ModernMainWindowPatches.patch_update_cache_display(self)
-    window_class._safe_update_objects_list = lambda self: ModernMainWindowPatches.patch_update_objects_list(self)
-    window_class._safe_save_configuration = lambda self, cfg: ModernMainWindowPatches.patch_save_configuration(self, cfg)
-
-    return window_class
-
 
 # Example usage in modern_main_window.py:
 # from .modern_main_window_patches import apply_all_patches

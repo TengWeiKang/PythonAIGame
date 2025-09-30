@@ -28,10 +28,7 @@ import cv2
 import logging
 
 from ..core.entities import Detection, BBox
-from ..core.performance import (
-    LRUCache, ImageCache, performance_timer,
-    PerformanceMonitor, cached_result
-)
+# Performance monitoring and caching removed for simplification
 from ..core.exceptions import DetectionError
 from ..backends.yolo_backend import YoloBackend
 
@@ -115,20 +112,13 @@ class ReferenceImageManager:
         (self.references_dir / "thumbnails").mkdir(exist_ok=True)
         (self.references_dir / "metadata").mkdir(exist_ok=True)
 
-        # Performance optimization: Multi-level caching
-        self._metadata_cache = LRUCache(max_size=max_references)
-        self._detection_cache = LRUCache(max_size=max_references * 2)
-        self._image_cache = ImageCache(max_size=20, max_memory_mb=max_memory_mb // 2)
-        self._thumbnail_cache = ImageCache(max_size=50, max_memory_mb=max_memory_mb // 4)
-        self._comparison_cache = LRUCache(max_size=200)
-
-        # Register caches with performance monitor
-        monitor = PerformanceMonitor.instance()
-        monitor.register_cache("ref_metadata", self._metadata_cache)
-        monitor.register_cache("ref_detections", self._detection_cache)
-        monitor.register_cache("ref_images", self._image_cache)
-        monitor.register_cache("ref_thumbnails", self._thumbnail_cache)
-        monitor.register_cache("ref_comparisons", self._comparison_cache)
+        # Simple caching with dictionaries
+        self._metadata_cache: Dict[str, ReferenceMetadata] = {}
+        self._detection_cache: Dict[str, List[Detection]] = {}
+        self._image_cache: Dict[str, np.ndarray] = {}
+        self._thumbnail_cache: Dict[str, np.ndarray] = {}
+        self._comparison_cache: Dict[str, ComparisonResult] = {}
+        self._cache_max_size = max_references
 
         # Thread-safe reference registry
         self._reference_registry = OrderedDict()
@@ -153,7 +143,6 @@ class ReferenceImageManager:
 
         logger.info(f"ReferenceImageManager initialized with {len(self._reference_registry)} existing references")
 
-    @performance_timer("reference_capture")
     async def capture_reference(self,
                                frame: np.ndarray,
                                reference_id: Optional[str] = None,
@@ -249,9 +238,9 @@ class ReferenceImageManager:
         self._save_reference_data(reference_id, metadata, detections)
 
         # Update caches
-        self._metadata_cache.put(reference_id, metadata)
-        self._detection_cache.put(reference_id, detections)
-        self._thumbnail_cache.put(reference_id, thumbnail)
+        self._metadata_cache[reference_id] = metadata
+        self._detection_cache[reference_id] = detections
+        self._thumbnail_cache[reference_id] = thumbnail
 
         # Update registry
         with self._registry_lock:
@@ -262,7 +251,43 @@ class ReferenceImageManager:
         logger.info(f"Captured reference {reference_id} in {analysis_time_ms:.1f}ms with {len(detections)} detections")
         return reference_id
 
-    @performance_timer("reference_retrieval")
+    def capture_reference_sync(self,
+                               frame: np.ndarray,
+                               reference_id: Optional[str] = None,
+                               confidence_threshold: float = 0.5) -> str:
+        """
+        Synchronous wrapper for capture_reference.
+
+        This method handles async execution internally and is suitable for
+        calling from synchronous contexts like Tkinter UI callbacks.
+
+        Args:
+            frame: OpenCV frame (BGR numpy array)
+            reference_id: Optional custom ID, auto-generated if None
+            confidence_threshold: Confidence threshold for YOLO detection
+
+        Returns:
+            reference_id: The ID of the captured reference
+        """
+        # Check if we're already in an event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an event loop, need to run in a new thread
+            # This shouldn't happen in normal Tkinter usage, but handle it
+            logger.warning("Already in event loop, using thread-based execution")
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.capture_reference(frame, reference_id, confidence_threshold)
+                )
+                return future.result()
+        except RuntimeError:
+            # No event loop running, we can safely use asyncio.run()
+            return asyncio.run(
+                self.capture_reference(frame, reference_id, confidence_threshold)
+            )
+
     def get_reference(self, reference_id: str) -> Dict[str, Any]:
         """
         Retrieve reference data including metadata and detections.
@@ -280,19 +305,19 @@ class ReferenceImageManager:
             metadata = self._load_reference_metadata(reference_id)
             if metadata is None:
                 raise ValueError(f"Reference {reference_id} not found")
-            self._metadata_cache.put(reference_id, metadata)
+            self._metadata_cache[reference_id] = metadata
 
         # Get detections
         detections = self._detection_cache.get(reference_id)
         if detections is None:
             detections = self._load_reference_detections(reference_id)
-            self._detection_cache.put(reference_id, detections)
+            self._detection_cache[reference_id] = detections
 
         # Get thumbnail (not full image for performance)
         thumbnail = self._thumbnail_cache.get(reference_id)
         if thumbnail is None:
             thumbnail = cv2.imread(metadata.thumbnail_path)
-            self._thumbnail_cache.put(reference_id, thumbnail)
+            self._thumbnail_cache[reference_id] = thumbnail
 
         return {
             'metadata': asdict(metadata),
@@ -301,7 +326,6 @@ class ReferenceImageManager:
             'detection_count': len(detections)
         }
 
-    @performance_timer("reference_comparison")
     def compare_with_reference(self,
                               current_detections: List[Detection],
                               reference_id: str,
@@ -339,7 +363,7 @@ class ReferenceImageManager:
             reference_detections = self._load_reference_detections(reference_id)
             if reference_detections is None:
                 raise ValueError(f"Reference {reference_id} not found")
-            self._detection_cache.put(reference_id, reference_detections)
+            self._detection_cache[reference_id] = reference_detections
 
         # Perform object matching using optimized algorithm
         object_matches = self._match_objects(current_detections, reference_detections)
@@ -393,7 +417,12 @@ class ReferenceImageManager:
 
         # Cache the result
         if use_cache:
-            self._comparison_cache.put(cache_key, result)
+            self._comparison_cache[cache_key] = result
+            # Keep cache size reasonable
+            if len(self._comparison_cache) > 100:
+                keys_to_remove = list(self._comparison_cache.keys())[:20]
+                for k in keys_to_remove:
+                    del self._comparison_cache[k]
 
         return result
 
@@ -758,10 +787,14 @@ class ReferenceImageManager:
             del self._reference_registry[reference_id]
 
             # Clear from caches
-            self._metadata_cache.put(reference_id, None)  # Invalidate
-            self._detection_cache.put(reference_id, None)
-            self._image_cache.put(reference_id, None)
-            self._thumbnail_cache.put(reference_id, None)
+            if reference_id in self._metadata_cache:
+                del self._metadata_cache[reference_id]
+            if reference_id in self._detection_cache:
+                del self._detection_cache[reference_id]
+            if reference_id in self._image_cache:
+                del self._image_cache[reference_id]
+            if reference_id in self._thumbnail_cache:
+                del self._thumbnail_cache[reference_id]
 
     def _periodic_cleanup(self):
         """Periodically clean up old references."""
@@ -832,16 +865,13 @@ class ReferenceImageManager:
     def get_memory_usage(self) -> Dict[str, float]:
         """Get current memory usage statistics."""
         return {
-            'metadata_cache_hit_rate': self._metadata_cache.stats().hit_rate,
-            'detection_cache_hit_rate': self._detection_cache.stats().hit_rate,
-            'comparison_cache_hit_rate': self._comparison_cache.stats().hit_rate,
             'total_references': len(self._reference_registry),
             'cache_entries': {
-                'metadata': self._metadata_cache.stats().size,
-                'detections': self._detection_cache.stats().size,
-                'images': self._image_cache.stats().size,
-                'thumbnails': self._thumbnail_cache.stats().size,
-                'comparisons': self._comparison_cache.stats().size
+                'metadata': len(self._metadata_cache),
+                'detections': len(self._detection_cache),
+                'images': len(self._image_cache),
+                'thumbnails': len(self._thumbnail_cache),
+                'comparisons': len(self._comparison_cache)
             }
         }
 

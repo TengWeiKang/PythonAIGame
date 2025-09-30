@@ -22,7 +22,7 @@
   "camera_device_name": "",
   "detection_confidence_threshold": 0.8,
   "min_detection_confidence": 0.5,
-  "detection_iou_threshold": 0.0,
+  "detection_iou_threshold": 0.61,
   "preferred_model": "yolo12m",
   "reference_image_path": "data\\reference\\reference_file_20250927_163458.png",
   "gemini_api_key": "AIzaSyCt-VENDT0A_wP62KEC-3hEmAQ9VwimhNk",

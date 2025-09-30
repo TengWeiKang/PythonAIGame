@@ -16,11 +16,58 @@ except ImportError:
 
 class YoloBackend(BaseBackend):
     """YOLO backend using Ultralytics implementation."""
-    
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.model = None
         self.model_path = None
+
+    @staticmethod
+    def resolve_priority_model_path(models_dir: str = "data/models",
+                                     fallback_model: str = "yolo11n") -> str:
+        """Resolve model path with priority for trained model.pt.
+
+        Priority order:
+        1. data/models/model.pt (if exists)
+        2. fallback_model parameter
+
+        Args:
+            models_dir: Directory containing models
+            fallback_model: Fallback model name if model.pt doesn't exist
+
+        Returns:
+            Path to model or model name to load
+        """
+        model_pt_path = os.path.join(models_dir, "model.pt")
+        if os.path.isfile(model_pt_path):
+            return model_pt_path
+        return fallback_model
+
+    def load_priority_model(self, models_dir: str = "data/models",
+                          fallback_model: str = "yolo11n") -> bool:
+        """Load model with priority for trained model.pt.
+
+        This method checks for a custom trained model.pt first and loads it
+        exclusively if found. Only falls back to built-in models if model.pt
+        doesn't exist.
+
+        Args:
+            models_dir: Directory containing models
+            fallback_model: Fallback model name if model.pt doesn't exist
+
+        Returns:
+            True if model loaded successfully
+        """
+        model_path = self.resolve_priority_model_path(models_dir, fallback_model)
+
+        # Check if this is the trained model or fallback
+        model_pt_path = os.path.join(models_dir, "model.pt")
+        if model_path == model_pt_path:
+            print(f"[YoloBackend] Prioritizing trained model: {model_pt_path}")
+        else:
+            print(f"[YoloBackend] No trained model found, using fallback: {fallback_model}")
+
+        return self.load_model(model_path)
 
     def load_model(self, model_path_or_name: str) -> bool:
         """Load a YOLO model from path or model name."""

@@ -15,7 +15,7 @@ import numpy as np
 
 from ..core.entities import Detection, ChatbotContext, ComparisonMetrics
 from ..core.exceptions import DetectionError, WebcamError
-from ..core.performance import performance_timer
+# Performance monitoring removed for simplification
 from ..backends.yolo_backend import YoloBackend
 from .gemini_service import AsyncGeminiService
 from .yolo_comparison_service import YoloComparisonService, YoloComparisonResult
@@ -162,7 +162,6 @@ class IntegratedAnalysisService:
             self.logger.error(f"Failed to set reference image: {e}")
             return False
 
-    @performance_timer("integrated_analysis")
     async def analyze_with_chatbot(self,
                                   current_image: np.ndarray,
                                   user_message: str,
@@ -473,24 +472,6 @@ class IntegratedAnalysisService:
             current_avg = self._stats['average_response_time_ms']
             successful_count = self._stats['successful_analyses']
             self._stats['average_response_time_ms'] = (current_avg * (successful_count - 1) + processing_time_ms) / successful_count
-
-    def get_performance_stats(self) -> Dict[str, Any]:
-        """Get comprehensive performance statistics."""
-        success_rate = (self._stats['successful_analyses'] / max(1, self._stats['total_analyses'])) * 100
-
-        return {
-            **self._stats,
-            'success_rate_percent': success_rate,
-            'yolo_comparison_stats': self.yolo_comparison_service.get_performance_stats(),
-            'reference_image_set': self.yolo_comparison_service.get_reference_info() is not None,
-            'gemini_configured': self.gemini_service.is_configured(),
-            'services_available': {
-                'yolo_backend': self.yolo_backend.is_loaded,
-                'comparison_service': True,
-                'image_analysis': self.inference_service is not None,
-                'gemini_service': self.gemini_service.is_configured()
-            }
-        }
 
     def get_reference_info(self) -> Optional[Dict[str, Any]]:
         """Get information about the current reference image."""

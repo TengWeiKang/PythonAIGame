@@ -11,7 +11,6 @@ from typing import List, Tuple, Optional
 from collections import deque
 
 from ..core.exceptions import WebcamError
-from ..core.performance import performance_timer, PerformanceMonitor
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -40,8 +39,7 @@ class WebcamService:
         self._target_fps = 30
         self._frame_skip_threshold = 2  # Skip every N frames if needed
 
-    @performance_timer("webcam_open")
-    def open(self, index: int, width: Optional[int] = None, 
+    def open(self, index: int, width: Optional[int] = None,
              height: Optional[int] = None, fps: Optional[int] = None) -> bool:
         """Open webcam with specified parameters."""
         self.close()
@@ -91,7 +89,6 @@ class WebcamService:
             self.close()
             raise WebcamError(f"Error opening webcam: {e}")
 
-    @performance_timer("webcam_read")
     def read(self) -> Tuple[bool, Optional[any]]:
         """Read frame from webcam with optimizations."""
         if not self.cap or not self._is_opened:
@@ -167,10 +164,6 @@ class WebcamService:
             self._current_fps = self._frame_count / (current_time - self._last_fps_time)
             self._frame_count = 0
             self._last_fps_time = current_time
-            
-            # Record FPS metric
-            monitor = PerformanceMonitor.instance()
-            monitor.record_operation_time("webcam_fps", self._current_fps)
     
     def get_current_fps(self) -> float:
         """Get current actual FPS."""

@@ -49,12 +49,8 @@ from .dialogs.object_naming_dialog import ObjectNamingDialog
 from .dialogs.object_edit_dialog import ObjectEditDialog
 from .dialogs.training_progress_dialog import TrainingProgressDialog
 
-# Import performance optimizations
-from ..core.performance import PerformanceMonitor, performance_timer
-from ..core.cache_manager import CacheManager, generate_image_hash
-from ..core.memory_manager import get_memory_manager
-from ..core.threading_manager import get_threading_manager
-from ..ui.optimized_canvas import OptimizedCanvas, VideoCanvas, ChatCanvas
+# Import optimized canvas components
+from ..ui.optimized_canvas import OptimizedCanvas, VideoCanvas, ChatCanvas, generate_image_hash
 
 
 class ModernMainWindow:
@@ -96,36 +92,10 @@ class ModernMainWindow:
         self.root = root
         self.config = config
         self.COLORS = self.THEMES['Dark']
-        
-        # Initialize performance systems first with error handling
-        try:
-            self.performance_monitor = PerformanceMonitor.instance()
-        except Exception as e:
-            logging.error(f"Failed to initialize performance monitor: {e}")
-            self.performance_monitor = None
-            
-        try:
-            # Ensure data and cache directories exist
-            os.makedirs(config.data_dir, exist_ok=True)
-            cache_dir = os.path.join(config.data_dir, "cache")
-            os.makedirs(cache_dir, exist_ok=True)
-            self.cache_manager = CacheManager(cache_dir)
-        except Exception as e:
-            logging.error(f"Failed to initialize cache manager: {e}")
-            self.cache_manager = None
-            
-        try:
-            self.memory_manager = get_memory_manager()
-        except Exception as e:
-            logging.error(f"Failed to initialize memory manager: {e}")
-            self.memory_manager = None
-            
-        try:
-            self.threading_manager = get_threading_manager()
-        except Exception as e:
-            logging.error(f"Failed to initialize threading manager: {e}")
-            self.threading_manager = None
-        
+
+        # Simple image cache
+        self._image_cache = {}
+
         # Load localization
         self.locale = self._load_locale()
         
@@ -236,16 +206,11 @@ class ModernMainWindow:
 
                 self.yolo_backend = YoloBackend(yolo_config)
 
-                # Load the YOLO model - prioritize trained model.pt if available
-                model_pt_path = os.path.join(self.config.models_dir, "model.pt")
-                if os.path.isfile(model_pt_path):
-                    model_to_load = model_pt_path
-                    logging.info(f"Loading trained model for YOLO backend: {model_pt_path}")
-                else:
-                    model_to_load = yolo_config['model_size']
-                    logging.info(f"Loading fallback model for YOLO backend: {model_to_load}")
-
-                if self.yolo_backend.load_model(model_to_load):
+                # Load the YOLO model with prioritization (model.pt first, then fallback)
+                if self.yolo_backend.load_priority_model(
+                    self.config.models_dir,
+                    yolo_config['model_size']
+                ):
                     # Initialize Reference Image Manager
                     try:
                         reference_data_dir = os.path.join(self.config.data_dir, 'references')
@@ -521,28 +486,17 @@ class ModernMainWindow:
                 self._apply_theme_to_widget(child)
         except Exception as e:
             logging.debug(f"Error applying theme to widget {widget}: {e}")
+
+    def _apply_power_saving_optimizations(self):
         """Apply optimizations to minimize resource usage."""
         try:
             # Lower FPS targets to save power
             self.config.target_fps = 15
             self.config.camera_fps = 15
-            
-            # Conservative memory usage
-            if self.memory_manager:
-                self.memory_manager.set_memory_pressure_threshold(0.60)  # Lower threshold
-            
-            # Minimal threading
-            if self.threading_manager:
-                self.threading_manager.set_max_workers('detection', 1)  # Single worker
-                self.threading_manager.set_max_workers('inference', 1)
-            
+
             # Prefer CPU over GPU for lower power consumption
             self.config.use_gpu = False
-            
-            # Minimal cache to save memory
-            if self.cache_manager:
-                self.cache_manager.set_cache_size_mb(128)  # Smaller cache
-                
+
             logging.debug("Power saving optimizations applied")
         except Exception as e:
             logging.error(f"Failed to apply power saving optimizations: {e}")
@@ -1327,7 +1281,6 @@ class ModernMainWindow:
                 print(f"Stream error: {e}")
                 break
     
-    @performance_timer("ui_update_video_display")
     def _update_video_display(self, frame):
         """Update the video display canvas with optimizations."""
         try:
@@ -1362,7 +1315,6 @@ class ModernMainWindow:
         except Exception as e:
             logging.error(f"Error updating resolution display: {e}")
     
-    @performance_timer("ui_display_image_on_canvas")
     def _display_image_on_canvas(self, canvas, image):
         """Display an image on the specified canvas with optimizations."""
         if image is None:
@@ -1407,7 +1359,7 @@ class ModernMainWindow:
             image_hash = generate_image_hash(image)
             cache_key = f"display:{image_hash}:{canvas_width}x{canvas_height}"
 
-            cached_photo = self.cache_manager.image_cache.get(cache_key)
+            cached_photo = self._image_cache.get(cache_key)
             if cached_photo is not None:
                 canvas.delete("all")
                 canvas.create_image(
@@ -1455,7 +1407,14 @@ class ModernMainWindow:
             photo = ImageTk.PhotoImage(pil_image)
 
             # Cache the PhotoImage
-            self.cache_manager.image_cache.put(cache_key, photo)
+            self._image_cache[cache_key] = photo
+
+            # Keep cache size reasonable
+            if len(self._image_cache) > 100:
+                # Remove oldest entries (simple FIFO)
+                keys_to_remove = list(self._image_cache.keys())[:20]
+                for k in keys_to_remove:
+                    del self._image_cache[k]
 
             # Update canvas
             canvas.delete("all")
@@ -2381,8 +2340,8 @@ class ModernMainWindow:
         # Set in reference manager first if available
         if hasattr(self, 'reference_manager') and self.reference_manager:
             try:
-                # Capture reference with current configuration
-                reference_id = self.reference_manager.capture_reference(
+                # Capture reference with current configuration using synchronous wrapper
+                reference_id = self.reference_manager.capture_reference_sync(
                     reference_image,
                     confidence_threshold=self.config.min_detection_confidence
                 )
@@ -3070,14 +3029,6 @@ Tips:
             # Shutdown threading manager
             if hasattr(self, 'threading_manager'):
                 self.threading_manager.shutdown_all(timeout=5.0)
-            
-            # Stop memory manager monitoring
-            if hasattr(self, 'memory_manager'):
-                self.memory_manager.stop_monitoring()
-            
-            # Stop performance monitoring
-            if hasattr(self, 'performance_monitor'):
-                self.performance_monitor.stop_monitoring()
             
         except Exception as e:
             print(f"Error during cleanup: {e}")
