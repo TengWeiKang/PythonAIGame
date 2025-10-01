@@ -26,8 +26,11 @@ class InferenceService:
         self._model = None
         self._model_loaded = False
 
-    def load_model(self) -> bool:
+    def load_model(self, custom_model_path: Optional[str] = None) -> bool:
         """Load YOLO model.
+
+        Args:
+            custom_model_path: Optional custom model path to load instead of default
 
         Returns:
             True if model loaded successfully, False otherwise
@@ -35,14 +38,28 @@ class InferenceService:
         try:
             from ultralytics import YOLO
 
-            if not Path(self.model_path).exists():
-                logger.error(f"Model file not found: {self.model_path}")
-                return False
+            # Use custom model path if provided, otherwise use default
+            model_to_load = custom_model_path if custom_model_path else self.model_path
 
-            logger.info(f"Loading YOLO model: {self.model_path}")
-            self._model = YOLO(self.model_path)
+            # Check if it's a path to a file or a model name
+            model_path_obj = Path(model_to_load)
+            if not model_path_obj.exists() and not model_to_load.endswith('.pt'):
+                # Might be a model name like 'yolo12n', let YOLO handle it
+                logger.info(f"Loading YOLO model by name: {model_to_load}")
+            elif not model_path_obj.exists():
+                logger.error(f"Model file not found: {model_to_load}")
+                return False
+            else:
+                logger.info(f"Loading YOLO model from file: {model_to_load}")
+
+            self._model = YOLO(model_to_load)
             self._model_loaded = True
-            logger.info("Model loaded successfully")
+            logger.info(f"Model loaded successfully: {model_to_load}")
+
+            # Update the current model path if loading was successful
+            if custom_model_path:
+                self.model_path = custom_model_path
+
             return True
 
         except ImportError:

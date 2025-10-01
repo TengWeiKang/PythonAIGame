@@ -285,10 +285,12 @@ class TrainingService:
         """
         try:
             from ultralytics import YOLO
+            import shutil
 
             # Export dataset first
             dataset_dir = self.data_dir / "exported_dataset"
             if not self.export_dataset(str(dataset_dir)):
+                logger.error("Failed to export dataset for training")
                 return False
 
             # Load base model
@@ -311,6 +313,31 @@ class TrainingService:
             )
 
             logger.info("Training completed successfully")
+
+            # Copy trained model to the expected location for inference
+            trained_model_path = Path("runs/detect/train/weights/best.pt")
+            target_model_dir = Path("data/models")
+            target_model_path = target_model_dir / "model.pt"
+
+            if trained_model_path.exists():
+                # Create models directory if it doesn't exist
+                target_model_dir.mkdir(parents=True, exist_ok=True)
+
+                # Copy the trained model to the expected location
+                logger.info(f"Copying trained model from {trained_model_path} to {target_model_path}")
+                shutil.copy2(str(trained_model_path), str(target_model_path))
+                logger.info(f"Trained model successfully saved to {target_model_path}")
+
+                # Also save a timestamped backup
+                from datetime import datetime
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                backup_path = target_model_dir / f"trained_model_{timestamp}.pt"
+                shutil.copy2(str(trained_model_path), str(backup_path))
+                logger.info(f"Backup model saved to {backup_path}")
+            else:
+                logger.error(f"Trained model not found at expected path: {trained_model_path}")
+                return False
+
             return True
 
         except ImportError:

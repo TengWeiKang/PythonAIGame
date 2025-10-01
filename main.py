@@ -138,8 +138,15 @@ class MainWindow:
             fps=self.config.get('target_fps', 30)
         )
 
-        # Inference service
-        model_path = self.config.get('preferred_model', 'yolo12n')
+        # Inference service - check for trained custom model first
+        trained_model_path = os.path.join("data", "models", "model.pt")
+        if os.path.exists(trained_model_path):
+            logger.info(f"Found trained custom model at {trained_model_path}, will use it for inference")
+            model_path = trained_model_path
+        else:
+            logger.info("No trained custom model found, using default pretrained model")
+            model_path = self.config.get('preferred_model', 'yolo12n')
+
         self.inference_service = InferenceService(
             model_path=model_path,
             confidence_threshold=self.config.get('detection_confidence_threshold', 0.5),
@@ -1337,7 +1344,18 @@ class MainWindow:
                     )
 
                     if success:
-                        progress.set_complete(True, "Training completed successfully!")
+                        # Reload the inference service with the newly trained model
+                        logger.info("Training successful, reloading inference model...")
+                        trained_model_path = os.path.join("data", "models", "model.pt")
+
+                        if os.path.exists(trained_model_path):
+                            # Reload the model in the inference service
+                            self.inference_service.load_model(custom_model_path=trained_model_path)
+                            logger.info("Inference model reloaded with newly trained model")
+                            progress.set_complete(True, "Training completed successfully!\nModel ready for use in chat.")
+                        else:
+                            logger.error(f"Trained model not found at {trained_model_path}")
+                            progress.set_complete(True, "Training completed but model file not found.")
                     else:
                         progress.set_complete(False, "Training failed.")
 
@@ -1443,12 +1461,18 @@ class MainWindow:
 
             # Task 1: Check if trained model exists
             model_path = os.path.join("data", "models", "model.pt")
+            logger.info(f"Checking for trained model at: {model_path}")
+
             if not os.path.exists(model_path):
+                logger.warning(f"Trained model not found at {model_path}")
                 self._add_chat_message(
                     "System",
-                    "⚠️ No trained model found. Please train objects first in the Objects tab."
+                    "⚠️ No trained model found. Please train objects first in the Objects tab.\n"
+                    f"Expected model location: {model_path}"
                 )
                 return
+
+            logger.info(f"Trained model found at {model_path}")
 
             # Disable send button
             self._send_button.config(state='disabled')
