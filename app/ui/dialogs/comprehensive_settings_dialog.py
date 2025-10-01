@@ -163,16 +163,28 @@ class ComprehensiveSettingsDialog:
 
         # Webcam settings
         self.camera_index_var = tk.IntVar(value=self.config.get('last_webcam_index', 0))
+        self.camera_device_name_var = tk.StringVar(value=self.config.get('camera_device_name', ''))
+        self.video_codec_var = tk.StringVar(value=self.config.get('video_codec', 'Auto'))
 
         # Analysis settings
         self.confidence_threshold_var = tk.DoubleVar(
             value=self.config.get('detection_confidence_threshold', 0.8)
         )
-        self.min_detection_confidence_var = tk.DoubleVar(
-            value=self.config.get('min_detection_confidence', 0.5)
-        )
         self.iou_threshold_var = tk.DoubleVar(
             value=self.config.get('detection_iou_threshold', 0.5)
+        )
+
+        # Training settings
+        self.train_epochs_var = tk.IntVar(
+            value=self.config.get('train_epochs', 50)
+        )
+        self.train_batch_size_var = tk.IntVar(
+            value=self.config.get('batch_size', 16)
+        )
+
+        # Debug settings
+        self.debug_mode_var = tk.BooleanVar(
+            value=self.config.get('debug_mode', False)
         )
 
         # Chatbot settings
@@ -210,9 +222,13 @@ class ComprehensiveSettingsDialog:
             'models_dir': self.models_dir_var.get(),
             'results_dir': self.results_dir_var.get(),
             'camera_index': self.camera_index_var.get(),
+            'camera_device_name': self.camera_device_name_var.get(),
+            'video_codec': self.video_codec_var.get(),
             'confidence_threshold': self.confidence_threshold_var.get(),
-            'min_detection_confidence': self.min_detection_confidence_var.get(),
             'iou_threshold': self.iou_threshold_var.get(),
+            'train_epochs': self.train_epochs_var.get(),
+            'train_batch_size': self.train_batch_size_var.get(),
+            'debug_mode': self.debug_mode_var.get(),
             'analysis_mode': self.analysis_mode_var.get(),
             'api_key': self.api_key_var.get(),
             'gemini_model': self.gemini_model_var.get(),
@@ -227,11 +243,12 @@ class ComprehensiveSettingsDialog:
         # Track changes on all variables
         variables = [
             self.language_var, self.data_dir_var, self.models_dir_var,
-            self.results_dir_var, self.camera_index_var,
-            self.confidence_threshold_var, self.min_detection_confidence_var,
-            self.iou_threshold_var, self.analysis_mode_var,
-            self.api_key_var, self.gemini_model_var, self.temperature_var,
-            self.max_tokens_var, self.timeout_var, self.chatbot_persona_var
+            self.results_dir_var, self.camera_index_var, self.camera_device_name_var,
+            self.video_codec_var, self.confidence_threshold_var, self.iou_threshold_var,
+            self.train_epochs_var, self.train_batch_size_var, self.debug_mode_var,
+            self.analysis_mode_var, self.api_key_var, self.gemini_model_var,
+            self.temperature_var, self.max_tokens_var, self.timeout_var,
+            self.chatbot_persona_var
         ]
 
         for var in variables:
@@ -480,26 +497,77 @@ class ComprehensiveSettingsDialog:
         # Device Selection Section
         device_section, device_content = self._create_section_frame(scrollable_frame, "📱 Camera Device")
         device_section.pack(fill='x', pady=(0, 10))
-        
-        # Camera index selection with detection
+
+        # Camera selection with dropdown
         cam_frame = tk.Frame(device_content, bg=self.COLORS['bg_secondary'])
         cam_frame.pack(fill='x', pady=5)
-        
-        tk.Label(cam_frame, text="Camera:", bg=self.COLORS['bg_secondary'], 
+
+        tk.Label(cam_frame, text="Camera Device:", bg=self.COLORS['bg_secondary'],
                 fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
-        
-        camera_spin = tk.Spinbox(cam_frame, from_=0, to=10, textvariable=self.camera_index_var,
-                               bg=self.COLORS['bg_tertiary'], fg=self.COLORS['text_primary'], width=5)
-        camera_spin.pack(side='left', padx=(10, 5))
-        
-        # Detect cameras button
-        ttk.Button(cam_frame, text="Detect Cameras", command=self._detect_cameras).pack(side='left', padx=(5, 0))
-        
-        # Camera name display
-        self.camera_name_label = tk.Label(device_content, text="", bg=self.COLORS['bg_secondary'], 
+
+        # Camera dropdown - will be populated by _detect_cameras
+        self.camera_combo = ttk.Combobox(cam_frame, state='readonly', width=40)
+        self.camera_combo.pack(side='left', padx=(10, 5))
+        self.camera_combo.bind('<<ComboboxSelected>>', self._on_camera_selected)
+
+        # Detect cameras button (also used for refresh)
+        self.detect_cameras_button = ttk.Button(cam_frame, text="🔄 Detect Cameras", command=self._detect_cameras)
+        self.detect_cameras_button.pack(side='left', padx=(5, 0))
+
+        # Camera info display
+        self.camera_name_label = tk.Label(device_content, text="Click 'Detect Cameras' to find available devices",
+                                         bg=self.COLORS['bg_secondary'],
                                          fg=self.COLORS['text_muted'], font=('Segoe UI', 8))
         self.camera_name_label.pack(anchor='w', pady=(0, 5))
-        
+
+        # Store camera list for reference
+        self._available_cameras = []
+
+        # NOTE: Auto-detection REMOVED for performance optimization
+        # Camera detection is now triggered ONLY when user clicks "Detect Cameras" button
+        # This significantly speeds up settings dialog opening (no blocking cv2.VideoCapture calls)
+
+        # Video Codec Settings Section
+        codec_section, codec_content = self._create_section_frame(scrollable_frame, "🎬 Video Codec")
+        codec_section.pack(fill='x', pady=(0, 10))
+
+        # Codec selection
+        codec_frame = tk.Frame(codec_content, bg=self.COLORS['bg_secondary'])
+        codec_frame.pack(fill='x', pady=5)
+
+        tk.Label(codec_frame, text="Video Codec:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9)).pack(side='left')
+
+        # Codec dropdown with common codecs
+        codec_options = [
+            "Auto",      # Let OpenCV choose automatically (default)
+            "MJPG",      # Motion JPEG (most compatible, good quality)
+            "YUYV",      # YUV 4:2:2 (uncompressed, high bandwidth)
+            "H264",      # H.264/AVC (compressed, modern)
+            "VP8",       # VP8 codec (WebM)
+            "I420",      # YUV 4:2:0 planar
+            "RGB3",      # RGB24 (uncompressed)
+            "GREY",      # Grayscale
+            "NV12",      # NV12 format
+            "UYVY"       # UYVY format
+        ]
+
+        self.codec_combo = ttk.Combobox(codec_frame, textvariable=self.video_codec_var,
+                                       values=codec_options, state='readonly', width=15)
+        self.codec_combo.pack(side='left', padx=(10, 0))
+
+        # Codec description
+        codec_desc = tk.Label(
+            codec_content,
+            text="Video codec format for camera stream. MJPG recommended for best compatibility. Auto lets the system choose.",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        codec_desc.pack(anchor='w', pady=(0, 5), padx=(0, 0))
+
         # Live Camera Preview Section - moved here per requirements
         preview_section, preview_content = self._create_section_frame(scrollable_frame, "📹 Live Camera Preview")
         preview_section.pack(fill='x', pady=(0, 10))
@@ -607,30 +675,6 @@ class ComprehensiveSettingsDialog:
         )
         conf_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
 
-        # Min detection confidence
-        min_conf_frame = tk.Frame(detection_content, bg=self.COLORS['bg_secondary'])
-        min_conf_frame.pack(fill='x', pady=5)
-
-        tk.Label(min_conf_frame, text="Min Detection Confidence:", bg=self.COLORS['bg_secondary'],
-                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
-
-        min_conf_scale = tk.Scale(min_conf_frame, from_=0.0, to=1.0, resolution=0.01, orient='horizontal',
-                                variable=self.min_detection_confidence_var, bg=self.COLORS['bg_secondary'],
-                                fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
-        min_conf_scale.pack(side='left', padx=(5, 0))
-
-        # Description for min detection confidence
-        min_conf_desc = tk.Label(
-            detection_content,
-            text="Minimum confidence for objects included in AI analysis.\nObjects below this threshold are filtered out before sending to chatbot. Recommended: 0.5",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_muted'],
-            font=('Segoe UI', 8),
-            justify='left',
-            wraplength=500
-        )
-        min_conf_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
-
         # IoU threshold
         iou_frame = tk.Frame(detection_content, bg=self.COLORS['bg_secondary'])
         iou_frame.pack(fill='x', pady=5)
@@ -654,7 +698,81 @@ class ComprehensiveSettingsDialog:
             wraplength=500
         )
         iou_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
-        
+
+        # Training Settings Section
+        training_section, training_content = self._create_section_frame(scrollable_frame, "🎓 YOLO Training Settings")
+        training_section.pack(fill='x', pady=(0, 10))
+
+        # Epochs slider
+        epochs_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
+        epochs_frame.pack(fill='x', pady=5)
+
+        tk.Label(epochs_frame, text="Training Epochs:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        epochs_scale = tk.Scale(epochs_frame, from_=1, to=500, resolution=1, orient='horizontal',
+                               variable=self.train_epochs_var, bg=self.COLORS['bg_secondary'],
+                               fg=self.COLORS['text_primary'], highlightthickness=0, length=200)
+        epochs_scale.pack(side='left', padx=(5, 0))
+
+        # Description for epochs
+        epochs_desc = tk.Label(
+            training_content,
+            text="Number of complete passes through the training dataset. More epochs = better accuracy but longer training time. Recommended: 50-100",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        epochs_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
+        # Batch size dropdown
+        batch_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
+        batch_frame.pack(fill='x', pady=5)
+
+        tk.Label(batch_frame, text="Batch Size:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        batch_combo = ttk.Combobox(batch_frame, textvariable=self.train_batch_size_var,
+                                   values=[8, 16, 32, 64], state='readonly', width=10)
+        batch_combo.pack(side='left', padx=(5, 0))
+
+        # Description for batch size
+        batch_desc = tk.Label(
+            training_content,
+            text="Number of images processed together. Larger batch = faster training but more memory. Recommended: 16 for most systems",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        batch_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
+        # Debug Settings Section
+        debug_section, debug_content = self._create_section_frame(scrollable_frame, "🐛 Debug Mode")
+        debug_section.pack(fill='x', pady=(0, 10))
+
+        # Enable debug mode checkbox
+        self._create_checkbox(
+            debug_content,
+            "Enable Debug Mode",
+            self.debug_mode_var
+        ).pack(anchor='w', pady=5)
+
+        # Description for debug mode
+        debug_desc = tk.Label(
+            debug_content,
+            text="When enabled, right-click on any canvas to access debug options:\n• Test Model: Run YOLO detection and draw bounding boxes\n• Clear: Remove all drawn boxes",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        debug_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
         # # Region of Interest Section
         # roi_section, roi_content = self._create_section_frame(scrollable_frame, "📐 Region of Interest")
         # roi_section.pack(fill='x', pady=(0, 10))
@@ -1161,9 +1279,13 @@ class ComprehensiveSettingsDialog:
             self.models_dir_var.get() != self.original_values['models_dir'] or
             self.results_dir_var.get() != self.original_values['results_dir'] or
             self.camera_index_var.get() != self.original_values['camera_index'] or
+            self.camera_device_name_var.get() != self.original_values['camera_device_name'] or
+            self.video_codec_var.get() != self.original_values['video_codec'] or
             self.confidence_threshold_var.get() != self.original_values['confidence_threshold'] or
-            self.min_detection_confidence_var.get() != self.original_values['min_detection_confidence'] or
             self.iou_threshold_var.get() != self.original_values['iou_threshold'] or
+            self.train_epochs_var.get() != self.original_values['train_epochs'] or
+            self.train_batch_size_var.get() != self.original_values['train_batch_size'] or
+            self.debug_mode_var.get() != self.original_values['debug_mode'] or
             self.analysis_mode_var.get() != self.original_values['analysis_mode'] or
             self.api_key_var.get() != self.original_values['api_key'] or
             self.gemini_model_var.get() != self.original_values['gemini_model'] or
@@ -1200,12 +1322,6 @@ class ComprehensiveSettingsDialog:
             return False, f"Confidence Threshold: {msg}"
 
         valid, msg = SettingsValidator.validate_confidence(
-            self.min_detection_confidence_var.get()
-        )
-        if not valid:
-            return False, f"Min Detection Confidence: {msg}"
-
-        valid, msg = SettingsValidator.validate_confidence(
             self.iou_threshold_var.get()
         )
         if not valid:
@@ -1240,6 +1356,19 @@ class ComprehensiveSettingsDialog:
         if not valid:
             return False, f"Camera Index: {msg}"
 
+        # Validate training settings
+        valid, msg = SettingsValidator.validate_positive_int(
+            self.train_epochs_var.get(), min_val=1, max_val=500
+        )
+        if not valid:
+            return False, f"Training Epochs: {msg}"
+
+        valid, msg = SettingsValidator.validate_positive_int(
+            self.train_batch_size_var.get(), min_val=1, max_val=128
+        )
+        if not valid:
+            return False, f"Training Batch Size: {msg}"
+
         # Validate API key if provided
         api_key = self.api_key_var.get().strip()
         if api_key:  # Only validate if not empty
@@ -1265,9 +1394,13 @@ class ComprehensiveSettingsDialog:
             self.config['models_dir'] = self.models_dir_var.get()
             self.config['results_dir'] = self.results_dir_var.get()
             self.config['last_webcam_index'] = self.camera_index_var.get()
+            self.config['camera_device_name'] = self.camera_device_name_var.get()
+            self.config['video_codec'] = self.video_codec_var.get()
             self.config['detection_confidence_threshold'] = self.confidence_threshold_var.get()
-            self.config['min_detection_confidence'] = self.min_detection_confidence_var.get()
             self.config['detection_iou_threshold'] = self.iou_threshold_var.get()
+            self.config['train_epochs'] = self.train_epochs_var.get()
+            self.config['batch_size'] = self.train_batch_size_var.get()
+            self.config['debug_mode'] = self.debug_mode_var.get()
             self.config['analysis_mode'] = self.analysis_mode_var.get()
             self.config['gemini_api_key'] = self.api_key_var.get()
             self.config['gemini_model'] = self.gemini_model_var.get()
@@ -1416,39 +1549,114 @@ class ComprehensiveSettingsDialog:
             self.show_key_button.config(text='👁')
 
     def _detect_cameras(self):
-        """Detect available cameras and update the camera index."""
-        try:
-            available_cameras = []
-            for i in range(10):
-                cap = cv2.VideoCapture(i)
-                if cap.isOpened():
-                    available_cameras.append(i)
-                    cap.release()
+        """Detect available cameras and populate the dropdown.
 
-            if available_cameras:
-                message = f"Found {len(available_cameras)} camera(s):\n"
-                message += ", ".join([f"Index {i}" for i in available_cameras])
-                messagebox.showinfo(
-                    "Camera Detection",
-                    message,
-                    parent=self.dialog
+        Runs camera detection in a background thread to avoid blocking UI.
+        This is important because cv2.VideoCapture is slow on Windows.
+        """
+        # Disable button during detection
+        self.detect_cameras_button.config(state='disabled', text="Detecting...")
+        self.camera_name_label.config(text="Detecting cameras...", fg=self.COLORS['text_muted'])
+
+        def detect_in_background():
+            """Background thread function for camera detection."""
+            try:
+                # Import WebcamService for camera enumeration
+                from app.services.webcam_service import WebcamService
+
+                # Get list of available cameras (this is the slow part)
+                cameras = WebcamService.list_available_cameras(max_cameras=10)
+
+                # Update UI on main thread
+                self.dialog.after(0, lambda: self._on_cameras_detected(cameras))
+
+            except Exception as e:
+                logger.error(f"Camera detection failed: {e}", exc_info=True)
+                error_msg = str(e)
+                self.dialog.after(0, lambda: self._on_camera_detection_error(error_msg))
+
+        # Run detection in background thread
+        detection_thread = threading.Thread(target=detect_in_background, daemon=True)
+        detection_thread.start()
+
+    def _on_cameras_detected(self, cameras: List[Dict[str, Any]]):
+        """Handle successful camera detection (runs on main thread).
+
+        Args:
+            cameras: List of detected camera information dictionaries
+        """
+        try:
+            self._available_cameras = cameras
+
+            if self._available_cameras:
+                # Build dropdown options
+                camera_options = []
+                for cam in self._available_cameras:
+                    option = f"[{cam['index']}] {cam['name']} ({cam['width']}x{cam['height']})"
+                    camera_options.append(option)
+
+                # Update combobox
+                self.camera_combo['values'] = camera_options
+
+                # Select current camera if it exists in the list
+                current_index = self.camera_index_var.get()
+                selected_idx = 0
+                for i, cam in enumerate(self._available_cameras):
+                    if cam['index'] == current_index:
+                        selected_idx = i
+                        break
+
+                self.camera_combo.current(selected_idx)
+                self._on_camera_selected(None)
+
+                self.camera_name_label.config(
+                    text=f"Found {len(self._available_cameras)} camera(s)",
+                    fg=self.COLORS['success']
                 )
-                # Set to first available camera
-                self.camera_index_var.set(available_cameras[0])
             else:
-                messagebox.showwarning(
-                    "Camera Detection",
-                    "No cameras detected",
-                    parent=self.dialog
+                self.camera_combo['values'] = []
+                self.camera_name_label.config(
+                    text="No cameras detected",
+                    fg=self.COLORS['warning']
                 )
 
         except Exception as e:
-            logger.error(f"Camera detection failed: {e}", exc_info=True)
-            messagebox.showerror(
-                "Error",
-                f"Failed to detect cameras:\n{str(e)}",
-                parent=self.dialog
+            logger.error(f"Error updating camera list: {e}")
+            self.camera_name_label.config(
+                text=f"Error: {str(e)}",
+                fg=self.COLORS['error']
             )
+        finally:
+            self.detect_cameras_button.config(state='normal', text="🔄 Detect Cameras")
+
+    def _on_camera_detection_error(self, error_msg: str):
+        """Handle camera detection error (runs on main thread).
+
+        Args:
+            error_msg: Error message to display
+        """
+        self.camera_name_label.config(
+            text=f"Error detecting cameras: {error_msg}",
+            fg=self.COLORS['error']
+        )
+        self.detect_cameras_button.config(state='normal', text="🔄 Detect Cameras")
+
+    def _on_camera_selected(self, event):
+        """Handle camera selection from dropdown."""
+        try:
+            selection_idx = self.camera_combo.current()
+            if selection_idx >= 0 and selection_idx < len(self._available_cameras):
+                selected_camera = self._available_cameras[selection_idx]
+                self.camera_index_var.set(selected_camera['index'])
+                self.camera_device_name_var.set(selected_camera['name'])
+
+                # Update info label
+                self.camera_name_label.config(
+                    text=f"Selected: {selected_camera['name']} (Index {selected_camera['index']})",
+                    fg=self.COLORS['text_muted']
+                )
+        except Exception as e:
+            logger.error(f"Error handling camera selection: {e}")
 
     def _test_camera(self):
         """Start testing the selected camera with live preview."""
@@ -1456,9 +1664,10 @@ class ComprehensiveSettingsDialog:
             return
 
         camera_index = self.camera_index_var.get()
+        video_codec = self.video_codec_var.get()
 
         try:
-            self._test_cap = cv2.VideoCapture(camera_index)
+            self._test_cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
 
             if not self._test_cap.isOpened():
                 messagebox.showerror(
@@ -1467,7 +1676,18 @@ class ComprehensiveSettingsDialog:
                     parent=self.dialog
                 )
                 return
-
+            
+            # Apply video codec setting if not "Auto"
+            if video_codec and video_codec != "Auto":
+                try:
+                    # Convert codec string to FourCC code
+                    fourcc = cv2.VideoWriter_fourcc(*video_codec.ljust(4)[:4])
+                    self._test_cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+                    logger.info(f"Applied video codec: {video_codec} (FourCC: {fourcc})")
+                except Exception as codec_err:
+                    logger.warning(f"Failed to set codec {video_codec}: {codec_err}")
+                    # Continue anyway - camera may still work with default codec
+                
             # Get camera properties
             width = int(self._test_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(self._test_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

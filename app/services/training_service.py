@@ -15,20 +15,18 @@ class TrainingObject:
     """Represents a training object with image and metadata."""
 
     def __init__(self, image: np.ndarray, label: str, bbox: Optional[tuple] = None,
-                 confirmed: bool = False, object_id: Optional[str] = None):
+                 object_id: Optional[str] = None):
         """Initialize training object.
 
         Args:
             image: Cropped object image
             label: Object class label
             bbox: Optional bounding box (x1, y1, x2, y2)
-            confirmed: Whether object is confirmed for training
             object_id: Unique identifier
         """
         self.image = image
         self.label = label
         self.bbox = bbox
-        self.confirmed = confirmed
         self.object_id = object_id or self._generate_id()
         self.timestamp = datetime.now()
 
@@ -42,7 +40,6 @@ class TrainingObject:
             'object_id': self.object_id,
             'label': self.label,
             'bbox': self.bbox,
-            'confirmed': self.confirmed,
             'timestamp': self.timestamp.isoformat()
         }
 
@@ -62,20 +59,18 @@ class TrainingService:
         self.objects: List[TrainingObject] = []
         self._load_objects()
 
-    def add_object(self, image: np.ndarray, label: str, bbox: Optional[tuple] = None,
-                   auto_confirm: bool = False) -> TrainingObject:
+    def add_object(self, image: np.ndarray, label: str, bbox: Optional[tuple] = None) -> TrainingObject:
         """Add object to training dataset.
 
         Args:
             image: Cropped object image
             label: Object class label
             bbox: Optional bounding box
-            auto_confirm: Whether to auto-confirm the object
 
         Returns:
             Created TrainingObject
         """
-        obj = TrainingObject(image, label, bbox, confirmed=auto_confirm)
+        obj = TrainingObject(image, label, bbox)
         self.objects.append(obj)
 
         # Save object image
@@ -99,14 +94,12 @@ class TrainingService:
                 return obj
         return None
 
-    def update_object(self, object_id: str, label: Optional[str] = None,
-                     confirmed: Optional[bool] = None) -> bool:
+    def update_object(self, object_id: str, label: Optional[str] = None) -> bool:
         """Update object properties.
 
         Args:
             object_id: Object identifier
             label: New label (optional)
-            confirmed: New confirmed status (optional)
 
         Returns:
             True if updated successfully, False if object not found
@@ -119,10 +112,6 @@ class TrainingService:
             old_label = obj.label
             obj.label = label
             logger.info(f"Updated object {object_id} label: {old_label} -> {label}")
-
-        if confirmed is not None:
-            obj.confirmed = confirmed
-            logger.info(f"Updated object {object_id} confirmed status: {confirmed}")
 
         self._save_metadata()
         return True
@@ -160,29 +149,18 @@ class TrainingService:
         """
         return self.objects.copy()
 
-    def get_confirmed_objects(self) -> List[TrainingObject]:
-        """Get only confirmed training objects.
-
-        Returns:
-            List of confirmed TrainingObjects
-        """
-        return [obj for obj in self.objects if obj.confirmed]
-
     def get_object_count(self) -> Dict[str, int]:
-        """Get count of objects by status.
+        """Get count of objects.
 
         Returns:
-            Dictionary with 'total', 'confirmed', 'unconfirmed' counts
+            Dictionary with 'total' count
         """
-        confirmed = sum(1 for obj in self.objects if obj.confirmed)
         return {
-            'total': len(self.objects),
-            'confirmed': confirmed,
-            'unconfirmed': len(self.objects) - confirmed
+            'total': len(self.objects)
         }
 
     def export_dataset(self, export_dir: str, format: str = 'yolo') -> bool:
-        """Export confirmed objects as training dataset.
+        """Export all objects as training dataset.
 
         Args:
             export_dir: Directory to export dataset
@@ -195,19 +173,43 @@ class TrainingService:
             export_path = Path(export_dir)
             export_path.mkdir(parents=True, exist_ok=True)
 
-            confirmed = self.get_confirmed_objects()
-            if not confirmed:
-                logger.warning("No confirmed objects to export")
+            all_objects = self.get_all_objects()
+            if not all_objects:
+                logger.warning("No objects to export")
                 return False
 
             if format == 'yolo':
-                return self._export_yolo_format(export_path, confirmed)
+                return self._export_yolo_format(export_path, all_objects)
             else:
                 logger.error(f"Unsupported format: {format}")
                 return False
 
         except Exception as e:
             logger.error(f"Error exporting dataset: {e}")
+            return False
+
+    def _export_all_objects(self, export_dir: str) -> bool:
+        """Export all objects as training dataset in YOLO format.
+
+        Args:
+            export_dir: Directory to export dataset
+
+        Returns:
+            True if exported successfully, False otherwise
+        """
+        try:
+            export_path = Path(export_dir)
+            export_path.mkdir(parents=True, exist_ok=True)
+
+            all_objects = self.get_all_objects()
+            if not all_objects:
+                logger.warning("No objects to export")
+                return False
+
+            return self._export_yolo_format(export_path, all_objects)
+
+        except Exception as e:
+            logger.error(f"Error exporting all objects: {e}")
             return False
 
     def _export_yolo_format(self, export_dir: Path, objects: List[TrainingObject]) -> bool:
@@ -270,27 +272,35 @@ class TrainingService:
 
     def train_model(self, base_model: str = "yolo12n.pt", epochs: int = 10,
                    batch_size: int = 8, img_size: int = 640,
-                   progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> bool:
-        """Train YOLO model with confirmed objects.
+                   progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+                   cancellation_check: Optional[Callable[[], bool]] = None) -> bool:
+        """Train YOLO model with all objects.
 
         Args:
             base_model: Base YOLO model to fine-tune
             epochs: Number of training epochs
             batch_size: Training batch size
             img_size: Image size for training
-            progress_callback: Optional callback for progress updates
+            progress_callback: Optional callback for progress updates (receives dict with metrics)
+            cancellation_check: Optional callback that returns True if training should be cancelled
 
         Returns:
-            True if training completed successfully, False otherwise
+            True if training completed successfully, False otherwise (includes cancellation)
         """
         try:
             from ultralytics import YOLO
             import shutil
+            import time
 
-            # Export dataset first
+            # Export dataset first (uses all objects)
             dataset_dir = self.data_dir / "exported_dataset"
-            if not self.export_dataset(str(dataset_dir)):
+            if not self._export_all_objects(str(dataset_dir)):
                 logger.error("Failed to export dataset for training")
+                return False
+
+            # Check for cancellation before starting
+            if cancellation_check and cancellation_check():
+                logger.info("Training cancelled before starting")
                 return False
 
             # Load base model
@@ -300,8 +310,83 @@ class TrainingService:
             # Prepare training arguments
             data_yaml = dataset_dir / "data.yaml"
 
+            # Track training start time for ETA calculation
+            training_start_time = time.time()
+            epoch_times = []
+
+            # Define callback for training progress updates
+            def on_train_epoch_end(trainer):
+                """Called at the end of each training epoch."""
+                try:
+                    # Check for cancellation
+                    if cancellation_check and cancellation_check():
+                        logger.info("Training cancellation requested")
+                        trainer.stop = True  # Signal YOLO to stop training
+                        return
+
+                    # Extract metrics from trainer
+                    current_epoch = trainer.epoch + 1  # YOLO uses 0-based indexing
+                    total_epochs = trainer.epochs
+
+                    # Calculate ETA
+                    epoch_time = time.time() - training_start_time
+                    epoch_times.append(epoch_time)
+
+                    if len(epoch_times) > 1:
+                        avg_epoch_time = sum(epoch_times) / len(epoch_times)
+                        remaining_epochs = total_epochs - current_epoch
+                        eta_seconds = int(avg_epoch_time * remaining_epochs)
+                    else:
+                        eta_seconds = 0
+
+                    # Extract loss metrics (from trainer.metrics if available)
+                    metrics = {
+                        'epoch': current_epoch,
+                        'total_epochs': total_epochs,
+                        'eta_seconds': eta_seconds
+                    }
+
+                    # Try to get loss values from trainer
+                    if hasattr(trainer, 'loss_items') and trainer.loss_items is not None:
+                        # Sum all loss components for total loss
+                        total_loss = sum(trainer.loss_items)
+                        metrics['loss'] = float(total_loss)
+                    elif hasattr(trainer, 'tloss'):
+                        metrics['loss'] = float(trainer.tloss)
+
+                    # Get additional metrics if available
+                    if hasattr(trainer, 'metrics') and trainer.metrics is not None:
+                        metrics_dict = trainer.metrics
+                        if hasattr(metrics_dict, 'results_dict'):
+                            results = metrics_dict.results_dict
+                            metrics['precision'] = results.get('metrics/precision(B)', 0.0)
+                            metrics['recall'] = results.get('metrics/recall(B)', 0.0)
+                            metrics['mAP50'] = results.get('metrics/mAP50(B)', 0.0)
+                            metrics['mAP50-95'] = results.get('metrics/mAP50-95(B)', 0.0)
+
+                    # Call progress callback with metrics
+                    if progress_callback:
+                        progress_callback(metrics)
+
+                    logger.info(f"Epoch {current_epoch}/{total_epochs} completed")
+
+                except Exception as e:
+                    logger.error(f"Error in training callback: {e}")
+
+            # Add callback to model
+            model.add_callback('on_train_epoch_end', on_train_epoch_end)
+
             # Start training
             logger.info("Starting model training...")
+
+            # Notify start of training
+            if progress_callback:
+                progress_callback({
+                    'status': 'training_started',
+                    'epoch': 0,
+                    'total_epochs': epochs
+                })
+
             results = model.train(
                 data=str(data_yaml),
                 epochs=epochs,
@@ -312,30 +397,105 @@ class TrainingService:
                 name='train'
             )
 
+            # Check if training was cancelled
+            if cancellation_check and cancellation_check():
+                logger.info("Training was cancelled by user")
+                return False
+
             logger.info("Training completed successfully")
 
-            # Copy trained model to the expected location for inference
-            trained_model_path = Path("runs/detect/train/weights/best.pt")
-            target_model_dir = Path("data/models")
+            # Get the actual save directory from training results
+            # YOLO creates runs/detect/train, train2, train3, etc. incrementally
+            save_dir = Path(results.save_dir) if hasattr(results, 'save_dir') else Path('runs/detect/train')
+            trained_model_path = save_dir / "weights" / "best.pt"
+
+            # Use absolute paths for reliability
+            trained_model_path = trained_model_path.resolve()
+            target_model_dir = Path("data/models").resolve()
             target_model_path = target_model_dir / "model.pt"
 
+            logger.info(f"Looking for trained model at: {trained_model_path}")
+
+            if not trained_model_path.exists():
+                # Try to find the model in the most recent train directory
+                logger.warning(f"Model not found at {trained_model_path}, searching for latest training run...")
+                runs_dir = Path("runs/detect").resolve()
+                if runs_dir.exists():
+                    # Find all train directories (train, train2, train3, etc.)
+                    train_dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir() and d.name.startswith('train')],
+                                      key=lambda x: x.stat().st_mtime, reverse=True)
+
+                    if train_dirs:
+                        latest_train_dir = train_dirs[0]
+                        trained_model_path = latest_train_dir / "weights" / "best.pt"
+                        logger.info(f"Found latest training directory: {latest_train_dir}")
+                        logger.info(f"Checking for model at: {trained_model_path}")
+
             if trained_model_path.exists():
-                # Create models directory if it doesn't exist
-                target_model_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    # Verify the model file has content
+                    model_size = trained_model_path.stat().st_size
+                    if model_size == 0:
+                        logger.error(f"Trained model file is empty: {trained_model_path}")
+                        return False
 
-                # Copy the trained model to the expected location
-                logger.info(f"Copying trained model from {trained_model_path} to {target_model_path}")
-                shutil.copy2(str(trained_model_path), str(target_model_path))
-                logger.info(f"Trained model successfully saved to {target_model_path}")
+                    logger.info(f"Found trained model ({model_size / 1024 / 1024:.2f} MB) at: {trained_model_path}")
 
-                # Also save a timestamped backup
-                from datetime import datetime
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                backup_path = target_model_dir / f"trained_model_{timestamp}.pt"
-                shutil.copy2(str(trained_model_path), str(backup_path))
-                logger.info(f"Backup model saved to {backup_path}")
+                    # Create models directory if it doesn't exist
+                    target_model_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Backup existing model.pt if it exists
+                    if target_model_path.exists():
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        backup_path = target_model_dir / f"model_backup_{timestamp}.pt"
+                        logger.info(f"Backing up existing model to: {backup_path}")
+                        shutil.copy2(str(target_model_path), str(backup_path))
+
+                    # Copy the trained model to the expected location
+                    logger.info(f"Copying trained model from {trained_model_path} to {target_model_path}")
+                    shutil.copy2(str(trained_model_path), str(target_model_path))
+
+                    # Verify the copy was successful
+                    if target_model_path.exists():
+                        copied_size = target_model_path.stat().st_size
+                        if copied_size == model_size:
+                            logger.info(f"✓ Trained model successfully saved to {target_model_path} ({copied_size / 1024 / 1024:.2f} MB)")
+
+                            # Also save a timestamped backup of this training
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            backup_path = target_model_dir / f"trained_model_{timestamp}.pt"
+                            shutil.copy2(str(trained_model_path), str(backup_path))
+                            logger.info(f"✓ Backup model saved to {backup_path}")
+
+                            # Try to verify the model can be loaded
+                            try:
+                                test_model = YOLO(str(target_model_path))
+                                logger.info(f"✓ Model validation successful - model can be loaded by YOLO")
+                            except Exception as e:
+                                logger.warning(f"Model copied but validation failed: {e}")
+
+                            return True
+                        else:
+                            logger.error(f"File copy size mismatch! Source: {model_size}, Target: {copied_size}")
+                            return False
+                    else:
+                        logger.error(f"Failed to copy model - target file does not exist after copy operation")
+                        return False
+
+                except Exception as e:
+                    logger.error(f"Error copying trained model: {e}", exc_info=True)
+                    return False
             else:
                 logger.error(f"Trained model not found at expected path: {trained_model_path}")
+                logger.error("Training may have failed or been cancelled before model was saved")
+
+                # List what's actually in the runs/detect directory for debugging
+                runs_dir = Path("runs/detect").resolve()
+                if runs_dir.exists():
+                    logger.info(f"Contents of {runs_dir}:")
+                    for item in runs_dir.iterdir():
+                        logger.info(f"  - {item.name}")
+
                 return False
 
             return True
@@ -385,7 +545,6 @@ class TrainingService:
                             image=image,
                             label=obj_data['label'],
                             bbox=obj_data.get('bbox'),
-                            confirmed=obj_data.get('confirmed', False),
                             object_id=obj_data['object_id']
                         )
                         self.objects.append(obj)

@@ -73,6 +73,7 @@ class MainWindow:
         self._training_image: Optional[np.ndarray] = None
         self._selected_bbox: Optional[tuple] = None
         self._object_selector: Optional[ObjectSelector] = None
+        self._temp_selector: Optional[ObjectSelector] = None  # Temporary selector for multi-canvas selection
 
         # Check Gemini configuration
         self._gemini_configured = bool(self.config.get('gemini_api_key', '').strip())
@@ -87,6 +88,9 @@ class MainWindow:
 
         # Auto-display reference image if it exists
         self._auto_display_reference()
+
+        # Setup debug mode on canvases if enabled
+        self._update_debug_mode()
 
         # Start video stream update loop
         self._update_video_stream()
@@ -135,7 +139,8 @@ class MainWindow:
             camera_index=self.config.get('last_webcam_index', 0),
             width=self.config.get('camera_width', 1920),
             height=self.config.get('camera_height', 1080),
-            fps=self.config.get('target_fps', 30)
+            fps=self.config.get('target_fps', 30),
+            codec=self.config.get('video_codec', 'Auto')
         )
 
         # Inference service - check for trained custom model first
@@ -182,7 +187,7 @@ class MainWindow:
 
     def _setup_window(self):
         """Setup main window properties with modern styling."""
-        self.root.title("Vision Analysis System - Modern Interface")
+        self.root.title("Vision Analysis System")
         self.root.geometry("1400x900")
         self.root.minsize(1200, 800)
 
@@ -273,30 +278,21 @@ class MainWindow:
         left_frame.pack(side='left', padx=20, pady=15)
         
         self.start_button = ttk.Button(
-            left_frame, 
+            left_frame,
             text="🎥 Start Stream",
             style='Modern.TButton',
             command=self._on_start_stream
         )
         self.start_button.pack(side='left', padx=(0, 10))
-        
+
         self.stop_button = ttk.Button(
-            left_frame, 
+            left_frame,
             text="⏹ Stop",
             style='Secondary.TButton',
             command=self._on_stop_stream,
             state='disabled'
         )
         self.stop_button.pack(side='left', padx=(0, 10))
-        
-        self.capture_button = ttk.Button(
-            left_frame, 
-            text="📷 Capture",
-            style='Modern.TButton',
-            command=self._on_capture_image,
-            state='disabled'
-        )
-        self.capture_button.pack(side='left', padx=(0, 10))
         
         # Right side - Settings and help
         right_frame = tk.Frame(toolbar_frame, bg=self.COLORS['bg_secondary'])
@@ -327,15 +323,25 @@ class MainWindow:
         self._build_right_panels(main_frame)
     
     def _build_video_panel(self, parent):
-        """Build the main video display panel."""
-        video_frame = tk.Frame(parent, bg=self.COLORS['bg_secondary'], relief='solid', bd=1)
-        video_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 5))
-        
+        """Build the main video display panel with video stream and reference image."""
+        # Container for left panel with both video and reference
+        left_container = tk.Frame(parent, bg=self.COLORS['bg_primary'])
+        left_container.grid(row=0, column=0, sticky='nsew', padx=(0, 5))
+
+        # Configure left container to split vertically (60% video, 40% reference)
+        left_container.grid_rowconfigure(0, weight=3)  # Video stream (60%)
+        left_container.grid_rowconfigure(1, weight=2)  # Reference image (40%)
+        left_container.grid_columnconfigure(0, weight=1)
+
+        # === Top: Video Stream Panel ===
+        video_frame = tk.Frame(left_container, bg=self.COLORS['bg_secondary'], relief='solid', bd=1)
+        video_frame.grid(row=0, column=0, sticky='nsew', pady=(0, 5))
+
         # Title bar
         title_frame = tk.Frame(video_frame, bg=self.COLORS['bg_tertiary'], height=30)
         title_frame.pack(fill='x')
         title_frame.pack_propagate(False)
-        
+
         title_label = tk.Label(
             title_frame,
             text="📹 Live Video Stream",
@@ -344,7 +350,7 @@ class MainWindow:
             font=('Segoe UI', 10, 'bold')
         )
         title_label.pack(side='left', padx=10, pady=5)
-        
+
         # Video display area
         video_content = tk.Frame(video_frame, bg=self.COLORS['bg_primary'])
         video_content.pack(fill='both', expand=True, padx=5, pady=5)
@@ -365,8 +371,17 @@ class MainWindow:
         controls_frame = tk.Frame(video_frame, bg=self.COLORS['bg_secondary'], height=40)
         controls_frame.pack(fill='x')
         controls_frame.pack_propagate(False)
-        
-        # Resolution and FPS indicators
+
+        # Camera name, resolution and FPS indicators
+        self.camera_name_label = tk.Label(
+            controls_frame,
+            text="Camera: --",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8)
+        )
+        self.camera_name_label.pack(side='left', padx=10, pady=10)
+
         self.resolution_label = tk.Label(
             controls_frame,
             text="Resolution: --",
@@ -374,8 +389,8 @@ class MainWindow:
             fg=self.COLORS['text_muted'],
             font=('Segoe UI', 8)
         )
-        self.resolution_label.pack(side='left', padx=10, pady=10)
-        
+        self.resolution_label.pack(side='left', padx=(20, 10), pady=10)
+
         self.fps_label = tk.Label(
             controls_frame,
             text="FPS: --",
@@ -384,6 +399,78 @@ class MainWindow:
             font=('Segoe UI', 8)
         )
         self.fps_label.pack(side='left', padx=(20, 10), pady=10)
+
+        # === Bottom: Reference Image Panel ===
+        reference_frame = tk.Frame(left_container, bg=self.COLORS['bg_secondary'], relief='solid', bd=1)
+        reference_frame.grid(row=1, column=0, sticky='nsew')
+
+        # Title and controls
+        ref_header_frame = tk.Frame(reference_frame, bg=self.COLORS['bg_tertiary'], height=30)
+        ref_header_frame.pack(fill='x')
+        ref_header_frame.pack_propagate(False)
+
+        tk.Label(
+            ref_header_frame,
+            text="📋 Reference Image",
+            bg=self.COLORS['bg_tertiary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 10, 'bold')
+        ).pack(side='left', padx=10, pady=5)
+
+        # Reference control buttons
+        ref_controls_frame = tk.Frame(reference_frame, bg=self.COLORS['bg_secondary'], height=35)
+        ref_controls_frame.pack(fill='x', padx=5, pady=2)
+        ref_controls_frame.pack_propagate(False)
+
+        ttk.Button(
+            ref_controls_frame,
+            text="📹 From Stream",
+            style='Secondary.TButton',
+            command=self._load_reference_from_stream,
+            width=15
+        ).pack(side='left', padx=(0, 2))
+
+        ttk.Button(
+            ref_controls_frame,
+            text="📁 Load Image",
+            style='Secondary.TButton',
+            command=self._load_reference_image,
+            width=15
+        ).pack(side='left', padx=2)
+
+        ttk.Button(
+            ref_controls_frame,
+            text="🗑 Clear",
+            style='Secondary.TButton',
+            command=self._clear_reference_image,
+            width=8
+        ).pack(side='left', padx=2)
+
+        # Reference image display
+        ref_image_frame = tk.Frame(reference_frame, bg=self.COLORS['bg_primary'])
+        ref_image_frame.pack(fill='both', expand=True, padx=5, pady=(0, 2))
+
+        self._reference_canvas = OptimizedCanvas(
+            ref_image_frame,
+            bg='black',
+            highlightthickness=0
+        )
+        self._reference_canvas.pack(fill='both', expand=True)
+        self._reference_canvas.set_render_quality('high')
+
+        # Reference image info
+        ref_info_frame = tk.Frame(reference_frame, bg=self.COLORS['bg_secondary'], height=25)
+        ref_info_frame.pack(fill='x')
+        ref_info_frame.pack_propagate(False)
+
+        self.ref_info_label = tk.Label(
+            ref_info_frame,
+            text="No reference image loaded",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8)
+        )
+        self.ref_info_label.pack(padx=10, pady=5)
     
     def _build_right_panels(self, parent):
         """Build the right side tabbed panels."""
@@ -397,89 +484,15 @@ class MainWindow:
         # Create notebook for tabs
         notebook = ttk.Notebook(right_frame, style='Modern.TNotebook')
         notebook.grid(row=0, column=0, sticky='nsew')
-        
-        # Reference Image Tab
-        ref_frame = self._build_reference_panel()
-        notebook.add(ref_frame, text="📋 Reference")
-        
-        # Objects Training Tab (replaces Current Image Tab)
+
+        # Objects Training Tab
         objects_frame = self._build_objects_panel()
         notebook.add(objects_frame, text="🎯 Objects")
-        
+
         # Chat Analysis Tab
         chat_frame = self._build_chat_panel()
         notebook.add(chat_frame, text="🤖 Analysis")
     
-    def _build_reference_panel(self):
-        """Build the reference image management panel."""
-        panel = tk.Frame(bg=self.COLORS['bg_secondary'])
-        
-        # Title and controls
-        header_frame = tk.Frame(panel, bg=self.COLORS['bg_tertiary'], height=40)
-        header_frame.pack(fill='x')
-        header_frame.pack_propagate(False)
-        
-        tk.Label(
-            header_frame,
-            text="Reference Image",
-            bg=self.COLORS['bg_tertiary'],
-            fg=self.COLORS['text_primary'],
-            font=('Segoe UI', 9, 'bold')
-        ).pack(side='left', padx=10, pady=10)
-        
-        # Control buttons
-        controls_frame = tk.Frame(panel, bg=self.COLORS['bg_secondary'], height=50)
-        controls_frame.pack(fill='x', padx=5, pady=5)
-        controls_frame.pack_propagate(False)
-        
-        ttk.Button(
-            controls_frame,
-            text="📁 Load Image",
-            style='Secondary.TButton',
-            command=self._load_reference_image
-        ).pack(side='left', padx=(0, 5))
-        
-        ttk.Button(
-            controls_frame,
-            text="📷 From Stream",
-            style='Secondary.TButton',
-            command=self._set_reference_from_stream
-        ).pack(side='left', padx=5)
-        
-        ttk.Button(
-            controls_frame,
-            text="🗑 Clear",
-            style='Secondary.TButton',
-            command=self._clear_reference_image
-        ).pack(side='left', padx=5)
-        
-        # Image display
-        image_frame = tk.Frame(panel, bg=self.COLORS['bg_primary'])
-        image_frame.pack(fill='both', expand=True, padx=5, pady=(0, 5))
-
-        self._reference_canvas = OptimizedCanvas(
-            image_frame,
-            bg='black',
-            highlightthickness=0
-        )
-        self._reference_canvas.pack(fill='both', expand=True)
-        self._reference_canvas.set_render_quality('high')
-        
-        # Image info
-        info_frame = tk.Frame(panel, bg=self.COLORS['bg_secondary'], height=30)
-        info_frame.pack(fill='x')
-        info_frame.pack_propagate(False)
-        
-        self.ref_info_label = tk.Label(
-            info_frame,
-            text="No reference image loaded",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_muted'],
-            font=('Segoe UI', 8)
-        )
-        self.ref_info_label.pack(padx=10, pady=5)
-        
-        return panel
     
     def _build_objects_panel(self):
         """Build the comprehensive objects training panel."""
@@ -632,60 +645,37 @@ class MainWindow:
 
         # Add mouse wheel support for objects listbox
         self._objects_listbox.bind('<MouseWheel>', self._on_objects_listbox_mousewheel)
+
+        # Add click-to-view: single click on object displays it
+        self._objects_listbox.bind('<<ListboxSelect>>', self._on_listbox_item_clicked)
         
         # Management buttons
         buttons_frame = tk.Frame(list_frame, bg=self.COLORS['bg_secondary'], height=40)
         buttons_frame.pack(fill='x', pady=(5, 0))
         buttons_frame.pack_propagate(False)
-        
-        ttk.Button(
-            buttons_frame,
-            text="✅ Confirm",
-            style='Secondary.TButton',
-            command=self._confirm_selected_object
-        ).pack(side='left', padx=(5, 2), pady=5)
-        
-        ttk.Button(
-            buttons_frame,
-            text="❌ Unconfirm",
-            style='Secondary.TButton',
-            command=self._unconfirm_selected_object
-        ).pack(side='left', padx=2, pady=5)
-        
+
         ttk.Button(
             buttons_frame,
             text="✏️ Edit",
             style='Secondary.TButton',
             command=self._edit_selected_object
-        ).pack(side='left', padx=2, pady=5)
-        
+        ).pack(side='left', padx=(5, 2), pady=5)
+
         ttk.Button(
             buttons_frame,
             text="🗑️ Delete",
             style='Secondary.TButton',
             command=self._delete_selected_object
         ).pack(side='left', padx=2, pady=5)
-        
-        ttk.Button(
-            buttons_frame,
-            text="👁️ View",
-            style='Secondary.TButton',
-            command=self._view_selected_object
-        ).pack(side='left', padx=2, pady=5)
-        
+
+        # Note: View button removed - clicking on an item in the list now displays it automatically
+
         ttk.Button(
             buttons_frame,
             text="🚀 Train Model",
             style='Modern.TButton',
-            command=self._train_model_with_confirmed_objects
+            command=self._train_model_with_all_objects
         ).pack(side='right', padx=(2, 5), pady=5)
-        
-        ttk.Button(
-            buttons_frame,
-            text="📤 Export Dataset",
-            style='Modern.TButton',
-            command=self._export_confirmed_dataset
-        ).pack(side='right', padx=2, pady=5)
         
         # Load initial objects
         self._refresh_objects_list()
@@ -906,7 +896,6 @@ class MainWindow:
             if self.webcam_service.start_stream():
                 self.start_button.config(state='disabled')
                 self.stop_button.config(state='normal')
-                self.capture_button.config(state='normal')
                 self.status_label.config(text="Webcam stream started")
                 self.connection_label.config(text="🟢 Connected", fg=self.COLORS['success'])
                 logger.info("Webcam stream started")
@@ -923,14 +912,14 @@ class MainWindow:
             self.webcam_service.stop_stream()
             self.start_button.config(state='normal')
             self.stop_button.config(state='disabled')
-            self.capture_button.config(state='disabled')
             self.status_label.config(text="Webcam stream stopped")
             self.connection_label.config(text="⚪ Disconnected", fg=self.COLORS['text_muted'])
 
             # Clear video canvas
             self._video_canvas.clear()
 
-            # Reset FPS and resolution labels
+            # Reset camera info labels
+            self.camera_name_label.config(text="Camera: --")
             self.fps_label.config(text="FPS: --")
             self.resolution_label.config(text="Resolution: --")
 
@@ -939,24 +928,6 @@ class MainWindow:
         except Exception as e:
             logger.error(f"Error stopping stream: {e}")
 
-    def _on_capture_image(self):
-        """Handle capture button click."""
-        try:
-            frame = self.webcam_service.capture_frame()
-            if frame is not None:
-                # Save to disk
-                os.makedirs("data/captures", exist_ok=True)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                filepath = f"data/captures/capture_{timestamp}.png"
-                cv2.imwrite(filepath, frame)
-                self.status_label.config(text=f"Image saved: {filepath}")
-                logger.info(f"Image captured: {filepath}")
-            else:
-                messagebox.showwarning("Warning", "No frame available to capture")
-
-        except Exception as e:
-            logger.error(f"Error capturing image: {e}")
-            messagebox.showerror("Error", f"Failed to capture image: {e}")
 
     def _update_video_stream(self):
         """Update video display with current frame."""
@@ -968,10 +939,12 @@ class MainWindow:
                     # Display frame on canvas
                     self._video_canvas.display_image(frame)
 
-                    # Update FPS and resolution
+                    # Update camera info, FPS and resolution
+                    camera_name = self.webcam_service.get_camera_name()
                     fps = self.webcam_service.get_fps()
                     width, height = self.webcam_service.get_resolution()
 
+                    self.camera_name_label.config(text=f"Camera: {camera_name}")
                     self.fps_label.config(text=f"FPS: {fps:.1f}")
                     self.resolution_label.config(text=f"Resolution: {width}x{height}")
 
@@ -1018,30 +991,52 @@ class MainWindow:
             logger.error(f"Error loading reference: {e}")
             messagebox.showerror("Error", f"Failed to load reference: {e}")
 
-    def _set_reference_from_stream(self):
-        """Set reference image from current webcam frame."""
+    def _load_reference_from_stream(self):
+        """Load reference image from current webcam stream frame.
+
+        This method captures the current frame from the video stream and sets it
+        as the reference image in memory and displays it in the reference canvas.
+        No files are saved to disk - the image is only loaded into memory.
+        """
         try:
+            # Check if camera is streaming
             if not self.webcam_service.is_streaming():
-                messagebox.showwarning("Warning", "Please start the webcam stream first")
+                messagebox.showwarning(
+                    "Camera Not Running",
+                    "Please start the webcam stream first before loading a frame as reference."
+                )
                 return
 
-            frame = self.webcam_service.capture_frame()
-            if frame is not None:
-                if self.reference_manager.set_reference_from_array(frame, save=True):
-                    self._display_reference_image()
-                    saved_path = self.reference_manager.save_current_reference()
-                    if saved_path:
-                        self.config['reference_image_path'] = saved_path
-                        self._save_config()
-                    self.status_label.config(text="Reference image set from stream")
-                else:
-                    messagebox.showerror("Error", "Failed to set reference image")
+            # Get current frame from webcam
+            frame = self.webcam_service.get_current_frame()
+
+            if frame is None:
+                messagebox.showwarning(
+                    "No Frame Available",
+                    "No frame is currently available from the video stream. Please try again."
+                )
+                return
+
+            # Set frame as reference image (in memory only)
+            if self.reference_manager.set_reference_from_array(frame.copy(), save=False):
+                # Display the reference image immediately
+                self._display_reference_image()
+
+                # Update status
+                self.status_label.config(text="Reference image loaded from stream")
+                logger.info("Reference image loaded from current video stream frame")
             else:
-                messagebox.showwarning("Warning", "No frame available")
+                messagebox.showerror(
+                    "Failed to Load",
+                    "Failed to set the current frame as reference image."
+                )
 
         except Exception as e:
-            logger.error(f"Error setting reference: {e}")
-            messagebox.showerror("Error", f"Failed to set reference: {e}")
+            logger.error(f"Error loading reference from stream: {e}")
+            messagebox.showerror(
+                "Error",
+                f"Failed to load reference from stream: {e}"
+            )
 
     def _clear_reference_image(self):
         """Clear current reference image."""
@@ -1116,17 +1111,102 @@ class MainWindow:
             messagebox.showerror("Error", f"Failed to load image: {e}")
 
     def _start_object_selection(self):
-        """Start interactive object selection."""
+        """Start interactive object selection - enable selection on ALL canvases simultaneously.
+
+        User can click and drag on ANY canvas (video stream, reference image, or objects canvas).
+        The first canvas that receives a mouse interaction becomes the active selection canvas.
+        """
         try:
-            if self._training_image is None:
-                messagebox.showwarning("Warning", "Please capture or load an image first")
+            # Prepare all possible canvas sources with their images
+            canvas_sources = []
+
+            # Video stream canvas
+            frame = self.webcam_service.get_current_frame()
+            if frame is not None:
+                canvas_sources.append({
+                    'canvas': self._video_canvas,
+                    'image': frame,
+                    'name': 'video stream'
+                })
+
+            # Reference image canvas
+            ref_image = self.reference_manager.get_reference()
+            if ref_image is not None:
+                canvas_sources.append({
+                    'canvas': self._reference_canvas,
+                    'image': ref_image,
+                    'name': 'reference image'
+                })
+
+            # Objects canvas (if it has an image)
+            if self._training_image is not None:
+                canvas_sources.append({
+                    'canvas': self._objects_canvas,
+                    'image': self._training_image,
+                    'name': 'objects canvas'
+                })
+
+            # Check if any canvas has an image
+            if not canvas_sources:
+                messagebox.showwarning(
+                    "No Images Available",
+                    "Please start the video stream, load a reference image, or capture/load an image in the Objects tab first."
+                )
                 return
 
-            self._object_selector.activate()
-            self.objects_status_label.config(text="Draw a rectangle around the object...")
+            # Store canvas sources for cleanup
+            self._active_selectors = []
+            self._selection_active = True
+
+            # Callback wrapper to handle selection from any canvas
+            def on_any_canvas_selected(source_info, bbox):
+                """Called when user completes selection on any canvas."""
+                # Store the selected image for cropping
+                self._training_image = source_info['image']
+
+                # Clean up all selectors
+                self._cleanup_multi_canvas_selection()
+
+                # Process the selection
+                self._on_object_selection_complete(bbox)
+
+            # Enable object selection on ALL canvases simultaneously
+            for source in canvas_sources:
+                selector = ObjectSelector(
+                    source['canvas'],
+                    lambda bbox, s=source: on_any_canvas_selected(s, bbox)
+                )
+                selector.set_image(source['image'])
+                selector.activate()
+                self._active_selectors.append(selector)
+
+                # Add visual feedback (green border) to indicate ready for selection
+                source['canvas'].config(highlightthickness=3, highlightbackground='green')
+
+            # Update status with instructions
+            canvas_names = ', '.join([s['name'] for s in canvas_sources])
+            self.objects_status_label.config(
+                text=f"Draw a rectangle on ANY canvas ({canvas_names}) to select an object..."
+            )
+
+            logger.info(f"Multi-canvas selection enabled on {len(canvas_sources)} canvases")
 
         except Exception as e:
             logger.error(f"Error starting selection: {e}")
+            messagebox.showerror("Error", f"Failed to start object selection: {e}")
+
+    def _cleanup_multi_canvas_selection(self):
+        """Clean up all active canvas selectors and remove visual feedback."""
+        if hasattr(self, '_active_selectors'):
+            for selector in self._active_selectors:
+                selector.deactivate()
+            self._active_selectors = []
+
+        # Remove visual feedback (green borders)
+        for canvas in [self._video_canvas, self._reference_canvas, self._objects_canvas]:
+            canvas.config(highlightthickness=0)
+
+        self._selection_active = False
 
     def _on_object_selection_complete(self, bbox: tuple):
         """Handle object selection completion.
@@ -1136,8 +1216,6 @@ class MainWindow:
                  Note: ObjectSelector automatically transforms canvas coords to image coords
         """
         try:
-            self._object_selector.deactivate()
-
             if self._training_image is None:
                 return
 
@@ -1185,57 +1263,17 @@ class MainWindow:
 
             objects = self.training_service.get_all_objects()
             for obj in objects:
-                status = "✓" if obj.confirmed else "○"
-                self._objects_listbox.insert(tk.END, f"{status} {obj.label} ({obj.object_id})")
+                self._objects_listbox.insert(tk.END, f"{obj.label} ({obj.object_id})")
 
             # Update count
             counts = self.training_service.get_object_count()
             self.objects_count_label.config(
-                text=f"({counts['confirmed']}/{counts['total']} confirmed)"
+                text=f"({counts['total']} objects)"
             )
 
         except Exception as e:
             logger.error(f"Error refreshing objects list: {e}")
 
-    def _confirm_selected_object(self):
-        """Confirm selected object for training."""
-        try:
-            selection = self._objects_listbox.curselection()
-            if not selection:
-                messagebox.showwarning("Warning", "Please select an object first")
-                return
-
-            idx = selection[0]
-            objects = self.training_service.get_all_objects()
-
-            if idx < len(objects):
-                obj = objects[idx]
-                self.training_service.update_object(obj.object_id, confirmed=True)
-                self._refresh_objects_list()
-                self.status_label.config(text=f"Object confirmed: {obj.label}")
-
-        except Exception as e:
-            logger.error(f"Error confirming object: {e}")
-
-    def _unconfirm_selected_object(self):
-        """Unconfirm selected object."""
-        try:
-            selection = self._objects_listbox.curselection()
-            if not selection:
-                messagebox.showwarning("Warning", "Please select an object first")
-                return
-
-            idx = selection[0]
-            objects = self.training_service.get_all_objects()
-
-            if idx < len(objects):
-                obj = objects[idx]
-                self.training_service.update_object(obj.object_id, confirmed=False)
-                self._refresh_objects_list()
-                self.status_label.config(text=f"Object unconfirmed: {obj.label}")
-
-        except Exception as e:
-            logger.error(f"Error unconfirming object: {e}")
 
     def _edit_selected_object(self):
         """Edit selected object label."""
@@ -1290,7 +1328,7 @@ class MainWindow:
             logger.error(f"Error deleting object: {e}")
 
     def _view_selected_object(self):
-        """View selected object image."""
+        """View selected object image in the Objects tab canvas."""
         try:
             selection = self._objects_listbox.curselection()
             if not selection:
@@ -1302,27 +1340,29 @@ class MainWindow:
 
             if idx < len(objects):
                 obj = objects[idx]
+                # Display in the Objects tab canvas
                 self._objects_canvas.display_image(obj.image)
-                self.objects_status_label.config(text=f"Viewing: {obj.label}")
+                self.objects_status_label.config(text=f"Viewing: {obj.label} ({obj.object_id})")
+                logger.info(f"Displaying object '{obj.label}' in Objects tab canvas")
 
         except Exception as e:
             logger.error(f"Error viewing object: {e}")
 
-    def _train_model_with_confirmed_objects(self):
-        """Start model training with confirmed objects."""
+    def _train_model_with_all_objects(self):
+        """Start model training with all objects."""
         try:
             counts = self.training_service.get_object_count()
 
-            if counts['confirmed'] == 0:
+            if counts['total'] == 0:
                 messagebox.showwarning(
                     "No Objects",
-                    "Please confirm at least one object before training."
+                    "Please add at least one object before training."
                 )
                 return
 
             if not messagebox.askyesno(
                 "Confirm Training",
-                f"Train model with {counts['confirmed']} confirmed objects?\nThis may take several minutes."
+                f"Train model with {counts['total']} objects?\nThis may take several minutes."
             ):
                 return
 
@@ -1331,17 +1371,39 @@ class MainWindow:
 
             def train_thread():
                 try:
-                    progress.update_status("Starting training...")
+                    progress.update_status("Preparing dataset...")
 
                     base_model = self.config.get('preferred_model', 'yolo12n')
                     epochs = self.config.get('train_epochs', 10)
                     batch_size = self.config.get('batch_size', 8)
 
+                    # Define progress callback that updates the dialog
+                    def on_progress(metrics):
+                        """Called by training service with updated metrics."""
+                        try:
+                            progress.update_metrics(metrics)
+                        except Exception as e:
+                            logger.error(f"Error in progress callback: {e}")
+
+                    # Define cancellation check callback
+                    def check_cancelled():
+                        """Called by training service to check if user cancelled."""
+                        return progress.is_cancelled()
+
+                    # Start training with callbacks
                     success = self.training_service.train_model(
                         base_model=base_model,
                         epochs=epochs,
-                        batch_size=batch_size
+                        batch_size=batch_size,
+                        progress_callback=on_progress,
+                        cancellation_check=check_cancelled
                     )
+
+                    # Check if cancelled
+                    if progress.is_cancelled():
+                        logger.info("Training cancelled by user")
+                        progress.set_complete(False, "Training cancelled by user.")
+                        return
 
                     if success:
                         # Reload the inference service with the newly trained model
@@ -1373,38 +1435,34 @@ class MainWindow:
             logger.error(f"Error starting training: {e}")
             messagebox.showerror("Error", f"Failed to start training: {e}")
 
-    def _export_confirmed_dataset(self):
-        """Export confirmed objects as dataset."""
-        try:
-            counts = self.training_service.get_object_count()
-
-            if counts['confirmed'] == 0:
-                messagebox.showwarning(
-                    "No Objects",
-                    "Please confirm at least one object before exporting."
-                )
-                return
-
-            # Ask for export directory
-            export_dir = filedialog.askdirectory(title="Select Export Directory")
-
-            if export_dir:
-                if self.training_service.export_dataset(export_dir, format='yolo'):
-                    messagebox.showinfo(
-                        "Export Complete",
-                        f"Dataset exported to:\n{export_dir}"
-                    )
-                    self.status_label.config(text="Dataset exported successfully")
-                else:
-                    messagebox.showerror("Error", "Failed to export dataset")
-
-        except Exception as e:
-            logger.error(f"Error exporting dataset: {e}")
-            messagebox.showerror("Error", f"Failed to export dataset: {e}")
 
     def _on_objects_listbox_mousewheel(self, event):
         """Handle mouse wheel scrolling on objects listbox."""
         self._objects_listbox.yview_scroll(-1 * int(event.delta / 120), "units")
+
+    def _on_listbox_item_clicked(self, event):
+        """Handle listbox item selection - automatically display the selected object.
+
+        Args:
+            event: Listbox selection event
+        """
+        try:
+            selection = self._objects_listbox.curselection()
+            if not selection:
+                return
+
+            idx = selection[0]
+            objects = self.training_service.get_all_objects()
+
+            if idx < len(objects):
+                obj = objects[idx]
+                # Display in the Objects tab canvas
+                self._objects_canvas.display_image(obj.image)
+                self.objects_status_label.config(text=f"Viewing: {obj.label} ({obj.object_id})")
+                logger.info(f"Auto-displaying object '{obj.label}' via list click")
+
+        except Exception as e:
+            logger.error(f"Error displaying object from list click: {e}")
 
     # ========== CHAT TAB HANDLERS ==========
 
@@ -1459,69 +1517,64 @@ class MainWindow:
                 )
                 return
 
-            # Task 1: Check if trained model exists
-            model_path = os.path.join("data", "models", "model.pt")
-            logger.info(f"Checking for trained model at: {model_path}")
-
-            if not os.path.exists(model_path):
-                logger.warning(f"Trained model not found at {model_path}")
-                self._add_chat_message(
-                    "System",
-                    "⚠️ No trained model found. Please train objects first in the Objects tab.\n"
-                    f"Expected model location: {model_path}"
-                )
-                return
-
-            logger.info(f"Trained model found at {model_path}")
-
             # Disable send button
             self._send_button.config(state='disabled')
             self.status_label.config(text="Processing...")
 
             def process_chat():
                 try:
-                    # Get current frame
+                    # Get current frame (may be None if camera not running)
                     frame = self.webcam_service.get_current_frame()
 
-                    if frame is None:
-                        self.root.after(0, lambda: self._add_chat_message(
-                            "System",
-                            "No webcam frame available. Please start the stream."
-                        ))
-                        return
+                    # Get reference image (may be None if not set)
+                    reference = self.reference_manager.get_reference()
 
-                    # Task 2: Check analysis mode from config
-                    analysis_mode = self.config.get('analysis_mode', 'yolo_detection')
+                    # Get analysis mode from config
+                    analysis_mode = self.config.get('analysis_mode', 'gemini_auto')
+
+                    response = None
 
                     if analysis_mode == 'yolo_detection':
-                        # YOLO Detection mode - Send ONLY text prompts with detection results (NO images)
-                        detections = self.inference_service.detect(frame)
-                        ref_image = self.reference_manager.get_reference()
+                        # YOLO Detection Mode: Run YOLO on available images, send text results to Gemini
+                        logger.info("Using YOLO Detection mode for analysis")
 
-                        # Get AI response with ONLY text (YOLO detection results, no images)
-                        if ref_image is not None:
-                            # Compare mode - send only YOLO detection results as text
-                            ref_detections = self.inference_service.detect(ref_image)
-                            response = self.gemini_service.compare_with_text_only(
-                                message, ref_detections, detections
-                            )
+                        # Build detection text
+                        detection_text_parts = []
+
+                        # Run YOLO on current frame if available
+                        if frame is not None:
+                            frame_detections = self.inference_service.detect(frame)
+                            if frame_detections:
+                                detection_text_parts.append(self._format_detections_as_text(frame_detections, "Current Frame"))
+                            else:
+                                detection_text_parts.append("Current Frame: No objects detected")
+
+                        # Run YOLO on reference image if available
+                        if reference is not None:
+                            ref_detections = self.inference_service.detect(reference)
+                            if ref_detections:
+                                detection_text_parts.append(self._format_detections_as_text(ref_detections, "Reference Image"))
+                            else:
+                                detection_text_parts.append("Reference Image: No objects detected")
+
+                        # Build final prompt with detection results
+                        if detection_text_parts:
+                            enhanced_message = f"{message}\n\nYOLO Detection Results:\n" + "\n".join(detection_text_parts)
                         else:
-                            # Single image analysis - send only YOLO detection results as text
-                            response = self.gemini_service.analyze_with_text_only(message, detections)
+                            enhanced_message = message
 
-                    else:  # analysis_mode == 'gemini_auto'
-                        # Gemini Auto-Analysis mode - Send images to Gemini (no YOLO detection)
-                        ref_image = self.reference_manager.get_reference()
+                        # Send text-only to Gemini (no images)
+                        response = self.gemini_service.chat(enhanced_message)
 
-                        # Send images directly to Gemini without YOLO data
-                        if ref_image is not None:
-                            # Compare mode - send images without YOLO detections
-                            response = self.gemini_service.compare_images(
-                                ref_image, frame, message, None, None
-                            )
-                        else:
-                            # Single image analysis - send image without YOLO detections
-                            response = self.gemini_service.analyze_image(frame, message, None)
+                    elif analysis_mode == 'gemini_auto':
+                        # Gemini Auto-Analysis Mode: Send images directly to Gemini for vision analysis
+                        logger.info("Using Gemini Auto-Analysis mode for analysis")
+                        response = self.gemini_service.chat_with_images(message, frame, reference)
+
+                    else:
+                        # Default to gemini_auto if mode is unrecognized
+                        logger.warning(f"Unknown analysis mode '{analysis_mode}', defaulting to gemini_auto")
+                        response = self.gemini_service.chat_with_images(message, frame, reference)
 
                     if response:
                         self.root.after(0, lambda: self._add_chat_message("AI", response))
@@ -1548,6 +1601,29 @@ class MainWindow:
         except Exception as e:
             logger.error(f"Error in send chat: {e}")
             self._send_button.config(state='normal')
+
+    def _format_detections_as_text(self, detections: List[Dict[str, Any]], image_label: str) -> str:
+        """Format YOLO detections as human-readable text.
+
+        Args:
+            detections: List of detection dictionaries from YOLO
+            image_label: Label for the image (e.g., "Current Frame" or "Reference Image")
+
+        Returns:
+            Formatted string describing detected objects
+        """
+        if not detections:
+            return f"{image_label}: No objects detected"
+
+        # Count objects by class
+        class_counts = {}
+        for det in detections:
+            class_name = det['class_name']
+            class_counts[class_name] = class_counts.get(class_name, 0) + 1
+
+        # Build summary
+        items = [f"{class_name} ({count})" for class_name, count in sorted(class_counts.items())]
+        return f"{image_label}: {', '.join(items)}"
 
     def _add_chat_message(self, sender: str, message: str):
         """Add message to chat display with markdown formatting.
@@ -1735,8 +1811,23 @@ class MainWindow:
                 persona=new_config.get('chatbot_persona', '')
             )
 
+            # Update webcam settings if changed
+            new_camera_index = new_config.get('last_webcam_index', 0)
+            new_codec = new_config.get('video_codec', 'Auto')
+            
+            if hasattr(self.webcam_service, 'camera_index') and self.webcam_service.camera_index != new_camera_index:
+                self.webcam_service.set_camera_index(new_camera_index)
+                logger.info(f"Webcam camera index updated to: {new_camera_index}")
+            
+            if hasattr(self.webcam_service, 'codec') and self.webcam_service.codec != new_codec:
+                self.webcam_service.set_codec(new_codec)
+                logger.info(f"Webcam codec updated to: {new_codec}")
+
             # Update Gemini configuration status
             self._gemini_configured = bool(new_config.get('gemini_api_key', '').strip())
+
+            # Update debug mode on canvases
+            self._update_debug_mode()
 
             self.status_label.config(text="Settings applied successfully")
             logger.info("Settings updated")
@@ -1744,6 +1835,34 @@ class MainWindow:
         except Exception as e:
             logger.error(f"Error applying settings: {e}")
             messagebox.showerror("Error", f"Failed to apply settings: {e}")
+
+    # ========== DEBUG MODE ==========
+
+    def _update_debug_mode(self):
+        """Update debug mode on all canvases based on config."""
+        try:
+            debug_enabled = self.config.get('debug_mode', False)
+
+            # Model test callback for running YOLO inference
+            def model_test_callback(image):
+                """Run YOLO inference on image and return detections."""
+                try:
+                    detections = self.inference_service.detect(image)
+                    logger.info(f"Debug mode: Found {len(detections) if detections else 0} detections")
+                    return detections if detections else []
+                except Exception as e:
+                    logger.error(f"Error in debug model test: {e}")
+                    return []
+
+            # Enable debug mode on all canvases
+            self._video_canvas.enable_debug_mode(debug_enabled, model_test_callback)
+            self._reference_canvas.enable_debug_mode(debug_enabled, model_test_callback)
+            self._objects_canvas.enable_debug_mode(debug_enabled, model_test_callback)
+
+            logger.info(f"Debug mode {'enabled' if debug_enabled else 'disabled'} on all canvases")
+
+        except Exception as e:
+            logger.error(f"Error updating debug mode: {e}")
 
     # ========== WINDOW MANAGEMENT ==========
 

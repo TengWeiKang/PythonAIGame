@@ -27,7 +27,7 @@ class InferenceService:
         self._model_loaded = False
 
     def load_model(self, custom_model_path: Optional[str] = None) -> bool:
-        """Load YOLO model.
+        """Load YOLO model. Thread-safe for reloading models.
 
         Args:
             custom_model_path: Optional custom model path to load instead of default
@@ -52,6 +52,7 @@ class InferenceService:
             else:
                 logger.info(f"Loading YOLO model from file: {model_to_load}")
 
+            # Load the new model (replaces existing model if any)
             self._model = YOLO(model_to_load)
             self._model_loaded = True
             logger.info(f"Model loaded successfully: {model_to_load}")
@@ -59,14 +60,17 @@ class InferenceService:
             # Update the current model path if loading was successful
             if custom_model_path:
                 self.model_path = custom_model_path
+                logger.info(f"Model path updated to: {custom_model_path}")
 
             return True
 
         except ImportError:
             logger.error("Ultralytics package not installed. Install with: pip install ultralytics")
+            self._model_loaded = False
             return False
         except Exception as e:
             logger.error(f"Error loading model: {e}")
+            self._model_loaded = False
             return False
 
     def detect(self, image: np.ndarray) -> List[Dict[str, Any]]:
@@ -93,6 +97,7 @@ class InferenceService:
                 image,
                 conf=self.confidence_threshold,
                 iou=self.iou_threshold,
+                max_det=100,
                 verbose=False
             )
 

@@ -21,14 +21,14 @@ class ObjectNamingDialog:
         """
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Name Object")
-        self.dialog.geometry("400x500")
+        self.dialog.geometry("550x650")  # Increased from 400x500 to 550x650
         self.dialog.transient(parent)
         self.dialog.grab_set()
 
         # Center on parent
         self.dialog.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() - 400) // 2
-        y = parent.winfo_y() + (parent.winfo_height() - 500) // 2
+        x = parent.winfo_x() + (parent.winfo_width() - 550) // 2  # Updated width
+        y = parent.winfo_y() + (parent.winfo_height() - 650) // 2  # Updated height
         self.dialog.geometry(f"+{x}+{y}")
 
         self.object_image = object_image
@@ -116,7 +116,7 @@ class ObjectNamingDialog:
 
             # Resize if too large
             h, w = image_rgb.shape[:2]
-            max_size = 300
+            max_size = 450  # Increased from 300 to 450 to utilize larger dialog
 
             if h > max_size or w > max_size:
                 scale = min(max_size / w, max_size / h)

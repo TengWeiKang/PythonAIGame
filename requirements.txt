@@ -10,4 +10,4 @@ ultralytics>=8.0.0  # optional (YOLO); code stubs gracefully if missing
 # onnxruntime-gpu  # optional acceleration
 transformers
 kernels
-google-generativeai
+google-genai

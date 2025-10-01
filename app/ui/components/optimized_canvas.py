@@ -1,10 +1,14 @@
 """Optimized canvas widget for high-performance image display."""
 
 import tkinter as tk
+from tkinter import Menu
 from PIL import Image, ImageTk
 import numpy as np
 import cv2
-from typing import Optional
+from typing import Optional, Callable
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class OptimizedCanvas(tk.Canvas):
@@ -38,6 +42,11 @@ class OptimizedCanvas(tk.Canvas):
         self._offset_y: int = 0
         self._original_width: int = 0
         self._original_height: int = 0
+
+        # Debug mode state
+        self._debug_mode_enabled = False
+        self._debug_boxes = []  # List of drawn debug boxes (canvas item IDs)
+        self._model_test_callback: Optional[Callable] = None
 
     def set_render_quality(self, quality: str):
         """Set rendering quality.
@@ -303,6 +312,151 @@ class OptimizedCanvas(tk.Canvas):
         # Redisplay last image if available
         if self._last_image_array is not None:
             self.display_image(self._last_image_array)
+
+    def enable_debug_mode(self, enabled: bool, model_test_callback: Optional[Callable] = None):
+        """Enable or disable debug mode with right-click context menu.
+
+        Args:
+            enabled: True to enable debug mode, False to disable
+            model_test_callback: Callback function to run model test (receives image array)
+        """
+        self._debug_mode_enabled = enabled
+        self._model_test_callback = model_test_callback
+
+        if enabled:
+            # Bind right-click for context menu
+            self.bind('<Button-3>', self._show_debug_menu)
+        else:
+            # Unbind right-click
+            self.unbind('<Button-3>')
+            # Clear any debug boxes
+            self.clear_debug_boxes()
+
+    def _show_debug_menu(self, event):
+        """Show debug context menu on right-click.
+
+        Args:
+            event: Mouse click event
+        """
+        if not self._debug_mode_enabled:
+            return
+
+        # Create context menu
+        menu = Menu(self, tearoff=0)
+        menu.add_command(label="Test Model", command=self._test_model)
+        menu.add_command(label="Clear", command=self.clear_debug_boxes)
+
+        # Show menu at cursor position
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _test_model(self):
+        """Run YOLO model test on current image and draw bounding boxes."""
+        try:
+            if self._last_image_array is None:
+                logger.warning("No image available for model testing")
+                return
+
+            if self._model_test_callback is None:
+                logger.warning("No model test callback configured")
+                return
+
+            # Clear previous debug boxes
+            self.clear_debug_boxes()
+
+            # Run model detection (callback should return list of detections)
+            detections = self._model_test_callback(self._last_image_array)
+
+            if not detections:
+                logger.info("No detections found in model test")
+                return
+
+            # Draw bounding boxes for detections
+            for det in detections:
+                # Detection format: {'bbox': (x1, y1, x2, y2), 'class_name': str, 'confidence': float}
+                bbox = det.get('bbox')
+                class_name = det.get('class_name', 'unknown')
+                confidence = det.get('confidence', 0.0)
+
+                if bbox:
+                    x1, y1, x2, y2 = bbox
+                    # Convert image coordinates to canvas coordinates
+                    canvas_x1, canvas_y1 = self.image_to_canvas_coords(x1, y1)
+                    canvas_x2, canvas_y2 = self.image_to_canvas_coords(x2, y2)
+
+                    # Draw bounding box
+                    box_id = self.create_rectangle(
+                        canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                        outline='#00ff00', width=2, tags='debug_box'
+                    )
+                    self._debug_boxes.append(box_id)
+
+                    # Draw label with confidence score (at top-left of box)
+                    label_text = f"{class_name}: {confidence*100:.0f}%"
+
+                    # Create temporary text to measure size
+                    temp_text_id = self.create_text(
+                        canvas_x1 + 2, canvas_y1 + 2,
+                        text=label_text,
+                        anchor='nw',
+                        font=('Segoe UI', 9, 'bold')
+                    )
+                    text_bbox = self.bbox(temp_text_id)
+                    # Delete the temporary text immediately
+                    self.delete(temp_text_id)
+
+                    # Draw text background for better visibility
+                    if text_bbox:
+                        bg_id = self.create_rectangle(
+                            text_bbox[0] - 2, text_bbox[1] - 1,
+                            text_bbox[2] + 2, text_bbox[3] + 1,
+                            fill='#000000',
+                            outline='',
+                            tags='debug_box'
+                        )
+                        self._debug_boxes.append(bg_id)
+
+                    # Draw label text on top of background
+                    text_id = self.create_text(
+                        canvas_x1 + 2, canvas_y1 + 2,
+                        text=label_text,
+                        anchor='nw',
+                        fill='#00ff00',
+                        font=('Segoe UI', 9, 'bold'),
+                        tags='debug_box'
+                    )
+                    self._debug_boxes.append(text_id)
+
+            logger.info(f"Drew {len(detections)} debug bounding boxes")
+
+        except Exception as e:
+            logger.error(f"Error in model test: {e}", exc_info=True)
+
+    def clear_debug_boxes(self):
+        """Clear all debug bounding boxes and text labels from canvas."""
+        try:
+            # Delete all items with 'debug_box' tag (safety net)
+            self.delete('debug_box')
+
+            # Delete all items by ID from our tracking list
+            for box_id in self._debug_boxes:
+                try:
+                    self.delete(box_id)
+                except:
+                    pass  # Item may have been deleted already
+
+            # Clear the tracking list
+            self._debug_boxes.clear()
+
+            # Force canvas update to remove visual artifacts
+            self.update_idletasks()
+
+            logger.info("Cleared debug boxes and text labels")
+
+        except Exception as e:
+            logger.error(f"Error clearing debug boxes: {e}")
 
 
 class ChatCanvas(tk.Canvas):
