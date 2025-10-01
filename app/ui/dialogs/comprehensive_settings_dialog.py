@@ -1164,6 +1164,7 @@ class ComprehensiveSettingsDialog:
             self.confidence_threshold_var.get() != self.original_values['confidence_threshold'] or
             self.min_detection_confidence_var.get() != self.original_values['min_detection_confidence'] or
             self.iou_threshold_var.get() != self.original_values['iou_threshold'] or
+            self.analysis_mode_var.get() != self.original_values['analysis_mode'] or
             self.api_key_var.get() != self.original_values['api_key'] or
             self.gemini_model_var.get() != self.original_values['gemini_model'] or
             self.temperature_var.get() != self.original_values['temperature'] or

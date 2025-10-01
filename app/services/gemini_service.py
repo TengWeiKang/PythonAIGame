@@ -49,9 +49,12 @@ class GeminiService:
                 return False
 
             genai.configure(api_key=self.api_key)
+
+            # Initialize model without system_instruction (persona will be in prompts)
             self._client = genai.GenerativeModel(self.model)
-            self._initialized = True
             logger.info(f"Gemini service initialized with model: {self.model}")
+
+            self._initialized = True
             return True
 
         except ImportError:
@@ -86,6 +89,7 @@ class GeminiService:
 
             # Enhance prompt with detections if provided
             enhanced_prompt = self._build_prompt(prompt, detections)
+            logger.info(f"Sending prompt to Gemini API (analyze_image): {enhanced_prompt}")
 
             # Generate response
             response = self._client.generate_content([enhanced_prompt, pil_image])
@@ -121,6 +125,7 @@ class GeminiService:
         try:
             # Build text-only prompt with detection results
             enhanced_prompt = self._build_prompt(prompt, detections)
+            logger.info(f"Sending prompt to Gemini API (analyze_with_text_only): {enhanced_prompt}")
 
             # Generate response with ONLY text (no images)
             response = self._client.generate_content(enhanced_prompt)
@@ -164,6 +169,7 @@ class GeminiService:
 
             # Build enhanced prompt
             enhanced_prompt = self._build_comparison_prompt(prompt, ref_detections, curr_detections)
+            logger.info(f"Sending prompt to Gemini API (compare_images): {enhanced_prompt}")
 
             # Generate response with both images
             response = self._client.generate_content([
@@ -207,6 +213,7 @@ class GeminiService:
         try:
             # Build text-only comparison prompt with detection results
             enhanced_prompt = self._build_comparison_prompt(prompt, ref_detections, curr_detections)
+            logger.info(f"Sending prompt to Gemini API (compare_with_text_only): {enhanced_prompt}")
 
             # Generate response with ONLY text (no images)
             response = self._client.generate_content(enhanced_prompt)
@@ -236,14 +243,23 @@ class GeminiService:
                 return None
 
         try:
+            # Prepend persona to message if provided
+            enhanced_message = ""
+            if self.persona and self.persona.strip():
+                enhanced_message = f"{self.persona}\n\n{message}"
+            else:
+                enhanced_message = message
+
+            logger.info(f"Sending prompt to Gemini API (chat): {enhanced_message}")
+
             # Build conversation history
             if context:
                 # Start chat session with history
                 chat = self._client.start_chat(history=[])
-                response = chat.send_message(message)
+                response = chat.send_message(enhanced_message)
             else:
                 # Single message
-                response = self._client.generate_content(message)
+                response = self._client.generate_content(enhanced_message)
 
             if response and response.text:
                 return response.text
@@ -265,10 +281,11 @@ class GeminiService:
         Returns:
             Enhanced prompt string
         """
-        # Start with persona instructions if provided
         enhanced = ""
-        if self.persona:
-            enhanced = f"{self.persona}\n\n"
+
+        # Add persona/role instructions first if provided
+        if self.persona and self.persona.strip():
+            enhanced += f"{self.persona}\n\n"
 
         # Add plain text instruction
         enhanced += "IMPORTANT: Respond in plain text only. Do not use any markdown formatting such as bold (**), italic (*), code blocks (```), inline code (`), headers (#), or any other markdown syntax. Write your response as simple, unformatted text.\n\n"
@@ -298,10 +315,11 @@ class GeminiService:
         Returns:
             Enhanced prompt string
         """
-        # Start with persona instructions if provided
         enhanced = ""
-        if self.persona:
-            enhanced = f"{self.persona}\n\n"
+
+        # Add persona/role instructions first if provided
+        if self.persona and self.persona.strip():
+            enhanced += f"{self.persona}\n\n"
 
         # Add plain text instruction
         enhanced += "IMPORTANT: Respond in plain text only. Do not use any markdown formatting such as bold (**), italic (*), code blocks (```), inline code (`), headers (#), or any other markdown syntax. Write your response as simple, unformatted text.\n\n"
@@ -379,3 +397,4 @@ class GeminiService:
 
         if persona is not None:
             self.persona = persona
+            # No need to reinitialize - persona is now applied in prompts, not model init
