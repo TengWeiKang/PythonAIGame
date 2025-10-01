@@ -85,6 +85,9 @@ class MainWindow:
         self._setup_styles()
         self._build_ui()
 
+        # Auto-display reference image if it exists
+        self._auto_display_reference()
+
         # Start video stream update loop
         self._update_video_stream()
 
@@ -155,7 +158,8 @@ class MainWindow:
             api_key=api_key,
             model=self.config.get('gemini_model', 'gemini-2.5-pro'),
             temperature=self.config.get('gemini_temperature', 0.7),
-            max_tokens=self.config.get('gemini_max_tokens', 2048)
+            max_tokens=self.config.get('gemini_max_tokens', 2048),
+            persona=self.config.get('chatbot_persona', '')
         )
 
         if api_key:
@@ -972,6 +976,20 @@ class MainWindow:
 
     # ========== REFERENCE TAB HANDLERS ==========
 
+    def _auto_display_reference(self):
+        """Automatically display reference image on startup if one exists."""
+        try:
+            # Check if reference manager has a reference image
+            if self.reference_manager.has_reference():
+                logger.info("Auto-displaying reference image on startup")
+                self._display_reference_image()
+                self.status_label.config(text="Reference image loaded from previous session")
+            else:
+                logger.info("No reference image found for auto-display")
+        except Exception as e:
+            logger.error(f"Error auto-displaying reference image: {e}")
+            # Don't show error to user as this is a non-critical startup operation
+
     def _load_reference_image(self):
         """Load reference image from file."""
         try:
@@ -1107,7 +1125,8 @@ class MainWindow:
         """Handle object selection completion.
 
         Args:
-            bbox: Bounding box (x1, y1, x2, y2)
+            bbox: Bounding box in original image coordinates (x1, y1, x2, y2)
+                 Note: ObjectSelector automatically transforms canvas coords to image coords
         """
         try:
             self._object_selector.deactivate()
@@ -1115,20 +1134,26 @@ class MainWindow:
             if self._training_image is None:
                 return
 
-            # Extract object from image
+            # Extract object from image using transformed coordinates
             x1, y1, x2, y2 = map(int, bbox)
             h, w = self._training_image.shape[:2]
 
-            # Ensure bbox is within image bounds
-            x1 = max(0, min(x1, w))
+            # Clamp bbox coordinates to image bounds
+            x1 = max(0, min(x1, w - 1))
             x2 = max(0, min(x2, w))
-            y1 = max(0, min(y1, h))
+            y1 = max(0, min(y1, h - 1))
             y2 = max(0, min(y2, h))
 
+            # Ensure x2 > x1 and y2 > y1
+            if x2 <= x1 or y2 <= y1:
+                messagebox.showerror("Error", "Invalid selection: area too small")
+                return
+
+            # Crop object from original image
             object_image = self._training_image[y1:y2, x1:x2]
 
             if object_image.size == 0:
-                messagebox.showerror("Error", "Invalid selection")
+                messagebox.showerror("Error", "Invalid selection: empty region")
                 return
 
             # Show naming dialog
@@ -1136,11 +1161,11 @@ class MainWindow:
             confirmed, label = dialog.show()
 
             if confirmed and label:
-                # Add to training service
+                # Add to training service with original image coordinates
                 self.training_service.add_object(object_image, label, bbox=(x1, y1, x2, y2))
                 self._refresh_objects_list()
                 self.objects_status_label.config(text=f"Object '{label}' added to training dataset")
-                logger.info(f"Training object added: {label}")
+                logger.info(f"Training object added: {label} at bbox ({x1}, {y1}, {x2}, {y2})")
 
         except Exception as e:
             logger.error(f"Error completing selection: {e}")
@@ -1416,6 +1441,15 @@ class MainWindow:
                 )
                 return
 
+            # Task 1: Check if trained model exists
+            model_path = os.path.join("data", "models", "model.pt")
+            if not os.path.exists(model_path):
+                self._add_chat_message(
+                    "System",
+                    "⚠️ No trained model found. Please train objects first in the Objects tab."
+                )
+                return
+
             # Disable send button
             self._send_button.config(state='disabled')
             self.status_label.config(text="Processing...")
@@ -1432,22 +1466,38 @@ class MainWindow:
                         ))
                         return
 
-                    # Run YOLO detection
-                    detections = self.inference_service.detect(frame)
+                    # Task 2: Check analysis mode from config
+                    analysis_mode = self.config.get('analysis_mode', 'yolo_detection')
 
-                    # Get reference image if available
-                    ref_image = self.reference_manager.get_reference()
+                    if analysis_mode == 'yolo_detection':
+                        # YOLO Detection mode - Send ONLY text prompts with detection results (NO images)
+                        detections = self.inference_service.detect(frame)
+                        ref_image = self.reference_manager.get_reference()
 
-                    # Get AI response
-                    if ref_image is not None:
-                        # Compare mode
-                        ref_detections = self.inference_service.detect(ref_image)
-                        response = self.gemini_service.compare_images(
-                            ref_image, frame, message, ref_detections, detections
-                        )
-                    else:
-                        # Single image analysis
-                        response = self.gemini_service.analyze_image(frame, message, detections)
+                        # Get AI response with ONLY text (YOLO detection results, no images)
+                        if ref_image is not None:
+                            # Compare mode - send only YOLO detection results as text
+                            ref_detections = self.inference_service.detect(ref_image)
+                            response = self.gemini_service.compare_with_text_only(
+                                message, ref_detections, detections
+                            )
+                        else:
+                            # Single image analysis - send only YOLO detection results as text
+                            response = self.gemini_service.analyze_with_text_only(message, detections)
+
+                    else:  # analysis_mode == 'gemini_auto'
+                        # Gemini Auto-Analysis mode - Send images to Gemini (no YOLO detection)
+                        ref_image = self.reference_manager.get_reference()
+
+                        # Send images directly to Gemini without YOLO data
+                        if ref_image is not None:
+                            # Compare mode - send images without YOLO detections
+                            response = self.gemini_service.compare_images(
+                                ref_image, frame, message, None, None
+                            )
+                        else:
+                            # Single image analysis - send image without YOLO detections
+                            response = self.gemini_service.analyze_image(frame, message, None)
 
                     if response:
                         self.root.after(0, lambda: self._add_chat_message("AI", response))
@@ -1476,11 +1526,11 @@ class MainWindow:
             self._send_button.config(state='normal')
 
     def _add_chat_message(self, sender: str, message: str):
-        """Add message to chat display.
+        """Add message to chat display with markdown formatting.
 
         Args:
             sender: Message sender (User, AI, System)
-            message: Message text
+            message: Message text (supports markdown for AI messages)
         """
         try:
             # Create message frame
@@ -1503,17 +1553,28 @@ class MainWindow:
             )
             sender_label.pack(anchor='w')
 
-            # Message label
-            message_label = tk.Label(
+            # Message display with markdown support (for AI messages)
+            message_text = tk.Text(
                 msg_frame,
-                text=message,
                 bg=self.COLORS['bg_primary'],
                 fg=self.COLORS['text_primary'],
                 font=('Segoe UI', 9),
-                wraplength=400,
-                justify='left'
+                wrap='word',
+                width=50,
+                height=1,  # Will auto-adjust
+                borderwidth=0,
+                highlightthickness=0,
+                cursor="arrow",
+                state='normal'
             )
-            message_label.pack(anchor='w', pady=(2, 0))
+            message_text.pack(anchor='w', pady=(2, 0), fill='x')
+
+            # Insert plain text (markdown parsing disabled)
+            message_text.insert('1.0', message)
+
+            # Auto-adjust height based on content
+            message_text.configure(state='disabled')
+            message_text.configure(height=int(message_text.index('end-1c').split('.')[0]))
 
             # Scroll to bottom
             self._chat_canvas.update_idletasks()
@@ -1521,6 +1582,59 @@ class MainWindow:
 
         except Exception as e:
             logger.error(f"Error adding chat message: {e}")
+
+    def _insert_markdown(self, text_widget: tk.Text, markdown_text: str):
+        """Parse and insert markdown-formatted text into Text widget.
+
+        Args:
+            text_widget: The Text widget to insert into
+            markdown_text: Markdown-formatted text
+        """
+        import re
+
+        # Split by code blocks first
+        parts = re.split(r'```(.*?)```', markdown_text, flags=re.DOTALL)
+
+        for i, part in enumerate(parts):
+            if i % 2 == 1:  # Code block
+                text_widget.insert('end', part, 'code')
+                continue
+
+            # Process inline markdown
+            pos = 0
+            while pos < len(part):
+                # Check for **bold**
+                bold_match = re.match(r'\*\*(.*?)\*\*', part[pos:])
+                if bold_match:
+                    text_widget.insert('end', bold_match.group(1), 'bold')
+                    pos += len(bold_match.group(0))
+                    continue
+
+                # Check for *italic*
+                italic_match = re.match(r'\*(.*?)\*', part[pos:])
+                if italic_match:
+                    text_widget.insert('end', italic_match.group(1), 'italic')
+                    pos += len(italic_match.group(0))
+                    continue
+
+                # Check for `code`
+                code_match = re.match(r'`(.*?)`', part[pos:])
+                if code_match:
+                    text_widget.insert('end', code_match.group(1), 'code')
+                    pos += len(code_match.group(0))
+                    continue
+
+                # Check for headers (# at start of line)
+                if pos == 0 or part[pos-1] == '\n':
+                    header_match = re.match(r'#+\s+(.*?)(\n|$)', part[pos:])
+                    if header_match:
+                        text_widget.insert('end', header_match.group(1) + '\n', 'header')
+                        pos += len(header_match.group(0))
+                        continue
+
+                # Regular character
+                text_widget.insert('end', part[pos])
+                pos += 1
 
     def _clear_chat(self):
         """Clear all chat messages."""
@@ -1593,7 +1707,8 @@ class MainWindow:
             self.gemini_service.update_config(
                 model=new_config.get('gemini_model'),
                 temperature=new_config.get('gemini_temperature'),
-                max_tokens=new_config.get('gemini_max_tokens')
+                max_tokens=new_config.get('gemini_max_tokens'),
+                persona=new_config.get('chatbot_persona', '')
             )
 
             # Update Gemini configuration status

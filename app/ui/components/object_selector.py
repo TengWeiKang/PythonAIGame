@@ -101,23 +101,32 @@ class ObjectSelector:
         end_x = event.x
         end_y = event.y
 
-        # Calculate bounding box (normalized)
-        x1 = min(self._start_x, end_x)
-        y1 = min(self._start_y, end_y)
-        x2 = max(self._start_x, end_x)
-        y2 = max(self._start_y, end_y)
+        # Calculate bounding box in canvas coordinates
+        canvas_x1 = min(self._start_x, end_x)
+        canvas_y1 = min(self._start_y, end_y)
+        canvas_x2 = max(self._start_x, end_x)
+        canvas_y2 = max(self._start_y, end_y)
 
-        # Ensure minimum size
-        if x2 - x1 < 10 or y2 - y1 < 10:
+        # Ensure minimum size in canvas coordinates
+        if canvas_x2 - canvas_x1 < 10 or canvas_y2 - canvas_y1 < 10:
             self._clear_rectangle()
             self._start_x = None
             self._start_y = None
             return
 
-        # Call callback with bounding box
+        # Convert canvas coordinates to image coordinates if canvas supports it
+        if hasattr(self.canvas, 'canvas_to_image_coords'):
+            img_x1, img_y1 = self.canvas.canvas_to_image_coords(canvas_x1, canvas_y1)
+            img_x2, img_y2 = self.canvas.canvas_to_image_coords(canvas_x2, canvas_y2)
+            bbox = (img_x1, img_y1, img_x2, img_y2)
+        else:
+            # Fallback to canvas coordinates if transformation not available
+            bbox = (canvas_x1, canvas_y1, canvas_x2, canvas_y2)
+
+        # Call callback with bounding box in image coordinates
         if self.callback:
             try:
-                self.callback((x1, y1, x2, y2))
+                self.callback(bbox)
             except Exception as e:
                 print(f"Error in selection callback: {e}")
 

@@ -839,7 +839,73 @@ class ComprehensiveSettingsDialog:
                                 textvariable=self.timeout_var, bg=self.COLORS['bg_tertiary'],
                                 fg=self.COLORS['text_primary'], width=6)
         timeout_spin.pack(side='left', padx=(10, 0))
-        
+
+        # Analysis Mode Section
+        analysis_section, analysis_content = self._create_section_frame(scrollable_frame, "🔬 Analysis Mode")
+        analysis_section.pack(fill='x', pady=(0, 10))
+
+        # Mode selection label
+        mode_label = tk.Label(
+            analysis_content,
+            text="Image Analysis Method:",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 9)
+        )
+        mode_label.pack(anchor='w', pady=(0, 5))
+
+        # Radio button for YOLO Detection mode
+        yolo_radio = tk.Radiobutton(
+            analysis_content,
+            text="YOLO Detection + AI Analysis (Recommended)",
+            variable=self.analysis_mode_var,
+            value="yolo_detection",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            selectcolor=self.COLORS['bg_tertiary'],
+            activebackground=self.COLORS['bg_secondary'],
+            activeforeground=self.COLORS['text_primary'],
+            font=('Segoe UI', 9)
+        )
+        yolo_radio.pack(anchor='w', pady=2)
+
+        # Description for YOLO mode
+        yolo_desc = tk.Label(
+            analysis_content,
+            text="Runs YOLO object detection on images, sends structured detection data to AI.\nProvides detailed object analysis with counts, types, and comparisons.",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left'
+        )
+        yolo_desc.pack(anchor='w', padx=(25, 0), pady=(0, 10))
+
+        # Radio button for Gemini Auto mode
+        gemini_radio = tk.Radiobutton(
+            analysis_content,
+            text="Gemini Auto-Analysis",
+            variable=self.analysis_mode_var,
+            value="gemini_auto",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            selectcolor=self.COLORS['bg_tertiary'],
+            activebackground=self.COLORS['bg_secondary'],
+            activeforeground=self.COLORS['text_primary'],
+            font=('Segoe UI', 9)
+        )
+        gemini_radio.pack(anchor='w', pady=2)
+
+        # Description for Gemini mode
+        gemini_desc = tk.Label(
+            analysis_content,
+            text="Sends images directly to Gemini AI without YOLO detection.\nGemini analyzes images independently using its vision capabilities.",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left'
+        )
+        gemini_desc.pack(anchor='w', padx=(25, 0), pady=(0, 5))
+
         # # Chat Behavior Section
         # chat_section, chat_content = self._create_section_frame(scrollable_frame, "💬 Chat Behavior")
         # chat_section.pack(fill='x', pady=(0, 10))
@@ -1201,6 +1267,7 @@ class ComprehensiveSettingsDialog:
             self.config['detection_confidence_threshold'] = self.confidence_threshold_var.get()
             self.config['min_detection_confidence'] = self.min_detection_confidence_var.get()
             self.config['detection_iou_threshold'] = self.iou_threshold_var.get()
+            self.config['analysis_mode'] = self.analysis_mode_var.get()
             self.config['gemini_api_key'] = self.api_key_var.get()
             self.config['gemini_model'] = self.gemini_model_var.get()
             self.config['gemini_temperature'] = self.temperature_var.get()

@@ -14,7 +14,8 @@ class GeminiService:
     """Service for interacting with Google Gemini AI API."""
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-pro",
-                 temperature: float = 0.7, max_tokens: int = 2048, timeout: int = 30):
+                 temperature: float = 0.7, max_tokens: int = 2048, timeout: int = 30,
+                 persona: str = ""):
         """Initialize Gemini service.
 
         Args:
@@ -23,12 +24,14 @@ class GeminiService:
             temperature: Response temperature (0-1)
             max_tokens: Maximum response tokens
             timeout: Request timeout in seconds
+            persona: Custom AI persona/role instructions
         """
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.persona = persona
         self._client = None
         self._initialized = False
 
@@ -97,6 +100,41 @@ class GeminiService:
             logger.error(f"Error analyzing image: {e}")
             return None
 
+    def analyze_with_text_only(self, prompt: str,
+                               detections: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+        """Analyze using ONLY text prompt (no images sent to API).
+
+        This method is used in yolo_detection mode where YOLO provides object
+        detection results and only these text results are sent to Gemini.
+
+        Args:
+            prompt: Analysis prompt
+            detections: YOLO detections to include as text context
+
+        Returns:
+            AI response text, or None on failure
+        """
+        if not self._initialized:
+            if not self.initialize():
+                return None
+
+        try:
+            # Build text-only prompt with detection results
+            enhanced_prompt = self._build_prompt(prompt, detections)
+
+            # Generate response with ONLY text (no images)
+            response = self._client.generate_content(enhanced_prompt)
+
+            if response and response.text:
+                return response.text
+            else:
+                logger.warning("Empty response from Gemini")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error analyzing with text only: {e}")
+            return None
+
     def compare_images(self, reference_image: np.ndarray, current_image: np.ndarray,
                       prompt: str, ref_detections: Optional[List[Dict[str, Any]]] = None,
                       curr_detections: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
@@ -146,6 +184,43 @@ class GeminiService:
             logger.error(f"Error comparing images: {e}")
             return None
 
+    def compare_with_text_only(self, prompt: str,
+                               ref_detections: Optional[List[Dict[str, Any]]] = None,
+                               curr_detections: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+        """Compare using ONLY text prompt (no images sent to API).
+
+        This method is used in yolo_detection mode where YOLO provides object
+        detection results from both images and only these text results are sent to Gemini.
+
+        Args:
+            prompt: Comparison prompt
+            ref_detections: Reference image YOLO detections
+            curr_detections: Current image YOLO detections
+
+        Returns:
+            AI response text, or None on failure
+        """
+        if not self._initialized:
+            if not self.initialize():
+                return None
+
+        try:
+            # Build text-only comparison prompt with detection results
+            enhanced_prompt = self._build_comparison_prompt(prompt, ref_detections, curr_detections)
+
+            # Generate response with ONLY text (no images)
+            response = self._client.generate_content(enhanced_prompt)
+
+            if response and response.text:
+                return response.text
+            else:
+                logger.warning("Empty response from Gemini")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error comparing with text only: {e}")
+            return None
+
     def chat(self, message: str, context: Optional[List[Dict[str, str]]] = None) -> Optional[str]:
         """Send chat message to Gemini.
 
@@ -190,16 +265,23 @@ class GeminiService:
         Returns:
             Enhanced prompt string
         """
-        if not detections:
-            return base_prompt
+        # Start with persona instructions if provided
+        enhanced = ""
+        if self.persona:
+            enhanced = f"{self.persona}\n\n"
 
-        # Format detections
-        det_summary = self._format_detections(detections)
+        # Add plain text instruction
+        enhanced += "IMPORTANT: Respond in plain text only. Do not use any markdown formatting such as bold (**), italic (*), code blocks (```), inline code (`), headers (#), or any other markdown syntax. Write your response as simple, unformatted text.\n\n"
 
-        enhanced = f"{base_prompt}\n\n"
-        enhanced += "YOLO Detection Results:\n"
-        enhanced += det_summary
-        enhanced += "\n\nPlease analyze the image considering these detected objects."
+        # Add user's prompt
+        enhanced += f"{base_prompt}\n\n"
+
+        # Add detection information if provided
+        if detections:
+            det_summary = self._format_detections(detections)
+            enhanced += "YOLO Detection Results:\n"
+            enhanced += det_summary
+            enhanced += "\n\nPlease analyze the image considering these detected objects."
 
         return enhanced
 
@@ -216,7 +298,16 @@ class GeminiService:
         Returns:
             Enhanced prompt string
         """
-        enhanced = f"{base_prompt}\n\n"
+        # Start with persona instructions if provided
+        enhanced = ""
+        if self.persona:
+            enhanced = f"{self.persona}\n\n"
+
+        # Add plain text instruction
+        enhanced += "IMPORTANT: Respond in plain text only. Do not use any markdown formatting such as bold (**), italic (*), code blocks (```), inline code (`), headers (#), or any other markdown syntax. Write your response as simple, unformatted text.\n\n"
+
+        # Add user's prompt
+        enhanced += f"{base_prompt}\n\n"
 
         if ref_detections:
             enhanced += "Reference Image Detections:\n"
@@ -267,13 +358,14 @@ class GeminiService:
         return self._initialized
 
     def update_config(self, model: Optional[str] = None, temperature: Optional[float] = None,
-                     max_tokens: Optional[int] = None):
+                     max_tokens: Optional[int] = None, persona: Optional[str] = None):
         """Update service configuration.
 
         Args:
             model: New model name
             temperature: New temperature value
             max_tokens: New max tokens value
+            persona: New persona value
         """
         if model is not None:
             self.model = model
@@ -284,3 +376,6 @@ class GeminiService:
 
         if max_tokens is not None:
             self.max_tokens = max(1, max_tokens)
+
+        if persona is not None:
+            self.persona = persona

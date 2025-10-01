@@ -32,6 +32,13 @@ class OptimizedCanvas(tk.Canvas):
         # Store last displayed image for resize
         self._last_image_array: Optional[np.ndarray] = None
 
+        # Store coordinate transformation info
+        self._scale: float = 1.0
+        self._offset_x: int = 0
+        self._offset_y: int = 0
+        self._original_width: int = 0
+        self._original_height: int = 0
+
     def set_render_quality(self, quality: str):
         """Set rendering quality.
 
@@ -78,6 +85,11 @@ class OptimizedCanvas(tk.Canvas):
             new_w = int(w * scale)
             new_h = int(h * scale)
 
+            # Store original dimensions and scale for coordinate transformation
+            self._original_width = w
+            self._original_height = h
+            self._scale = scale
+
             # Select interpolation based on quality
             if self._render_quality == 'high':
                 interpolation = cv2.INTER_LANCZOS4
@@ -104,6 +116,10 @@ class OptimizedCanvas(tk.Canvas):
             x = (canvas_width - new_w) // 2
             y = (canvas_height - new_h) // 2
 
+            # Store offset for coordinate transformation
+            self._offset_x = x
+            self._offset_y = y
+
             # Display on canvas
             if self._image_id is None:
                 self._image_id = self.create_image(x, y, anchor=tk.NW, image=photo)
@@ -116,6 +132,62 @@ class OptimizedCanvas(tk.Canvas):
 
         except Exception as e:
             print(f"Error displaying image: {e}")
+
+    def canvas_to_image_coords(self, canvas_x: int, canvas_y: int) -> tuple:
+        """Convert canvas coordinates to original image coordinates.
+
+        Args:
+            canvas_x: X coordinate on canvas
+            canvas_y: Y coordinate on canvas
+
+        Returns:
+            Tuple of (image_x, image_y) in original image coordinates
+        """
+        if self._scale <= 0:
+            return (canvas_x, canvas_y)
+
+        # Subtract offset to get position relative to image
+        rel_x = canvas_x - self._offset_x
+        rel_y = canvas_y - self._offset_y
+
+        # Apply inverse scaling
+        image_x = int(rel_x / self._scale)
+        image_y = int(rel_y / self._scale)
+
+        return (image_x, image_y)
+
+    def image_to_canvas_coords(self, image_x: int, image_y: int) -> tuple:
+        """Convert original image coordinates to canvas coordinates.
+
+        Args:
+            image_x: X coordinate in original image
+            image_y: Y coordinate in original image
+
+        Returns:
+            Tuple of (canvas_x, canvas_y) on canvas
+        """
+        if self._scale <= 0:
+            return (image_x, image_y)
+
+        # Apply scaling
+        canvas_x = int(image_x * self._scale) + self._offset_x
+        canvas_y = int(image_y * self._scale) + self._offset_y
+
+        return (canvas_x, canvas_y)
+
+    def get_transform_info(self) -> dict:
+        """Get current transformation information.
+
+        Returns:
+            Dictionary with scale, offset, and original dimensions
+        """
+        return {
+            'scale': self._scale,
+            'offset_x': self._offset_x,
+            'offset_y': self._offset_y,
+            'original_width': self._original_width,
+            'original_height': self._original_height
+        }
 
     def _draw_overlays(self, image: np.ndarray, overlays: dict) -> np.ndarray:
         """Draw overlay information on image.
@@ -207,13 +279,20 @@ class OptimizedCanvas(tk.Canvas):
             return image
 
     def clear(self):
-        """Clear canvas."""
+        """Clear canvas and reset transformation info."""
         if self._image_id is not None:
             self.delete(self._image_id)
             self._image_id = None
 
         self._current_image = None
         self._last_image_array = None
+
+        # Reset transformation info
+        self._scale = 1.0
+        self._offset_x = 0
+        self._offset_y = 0
+        self._original_width = 0
+        self._original_height = 0
 
     def _on_resize(self, event):
         """Handle canvas resize event.
