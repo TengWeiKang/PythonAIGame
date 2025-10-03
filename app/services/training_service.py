@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import cv2
 from datetime import datetime
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,383 @@ def get_device_memory_info(device: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+class ImageAugmentor:
+    """Image augmentation utilities for training data enhancement.
+
+    Augmentation methods are categorized into two types:
+
+    1. DETERMINISTIC methods - produce the same result every time, applied ONCE:
+       - horizontal_flip, vertical_flip, edge_enhance
+
+    2. STOCHASTIC methods - use randomization, applied multiple times (augmentation_factor):
+       - rotation, scaling, translation, brightness, contrast, saturation, hue,
+         gaussian_blur, motion_blur, gaussian_noise, salt_pepper_noise, sharpness
+    """
+
+    # Deterministic augmentation methods (same output every time)
+    DETERMINISTIC_METHODS = {'horizontal_flip', 'vertical_flip', 'edge_enhance'}
+
+    # Stochastic augmentation methods (random parameters, different each time)
+    STOCHASTIC_METHODS = {
+        'rotation', 'scaling', 'translation', 'brightness', 'contrast',
+        'saturation', 'hue', 'gaussian_blur', 'motion_blur', 'gaussian_noise',
+        'salt_pepper_noise', 'sharpness'
+    }
+
+    @staticmethod
+    def augment_horizontal_flip(image: np.ndarray) -> np.ndarray:
+        """Apply horizontal flip (mirror image).
+
+        Args:
+            image: Input image
+
+        Returns:
+            Horizontally flipped image
+        """
+        return cv2.flip(image, 1)
+
+    @staticmethod
+    def augment_vertical_flip(image: np.ndarray) -> np.ndarray:
+        """Apply vertical flip.
+
+        Args:
+            image: Input image
+
+        Returns:
+            Vertically flipped image
+        """
+        return cv2.flip(image, 0)
+
+    @staticmethod
+    def augment_rotation(image: np.ndarray, angle: Optional[float] = None) -> np.ndarray:
+        """Apply rotation with random or specified angle.
+
+        Args:
+            image: Input image
+            angle: Rotation angle in degrees (if None, randomly chosen from -30 to +30)
+
+        Returns:
+            Rotated image
+        """
+        if angle is None:
+            angle = random.uniform(-30, 30)
+
+        h, w = image.shape[:2]
+        center = (w // 2, h // 2)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+
+        # Calculate new dimensions to avoid cropping
+        cos = np.abs(matrix[0, 0])
+        sin = np.abs(matrix[0, 1])
+        new_w = int((h * sin) + (w * cos))
+        new_h = int((h * cos) + (w * sin))
+
+        # Adjust transformation matrix
+        matrix[0, 2] += (new_w / 2) - center[0]
+        matrix[1, 2] += (new_h / 2) - center[1]
+
+        return cv2.warpAffine(image, matrix, (new_w, new_h),
+                             borderMode=cv2.BORDER_CONSTANT,
+                             borderValue=(0, 0, 0))
+
+    @staticmethod
+    def augment_scaling(image: np.ndarray, scale_factor: Optional[float] = None) -> np.ndarray:
+        """Apply scaling (zoom in/out).
+
+        Args:
+            image: Input image
+            scale_factor: Scale factor (if None, randomly chosen from 0.8 to 1.2)
+
+        Returns:
+            Scaled image
+        """
+        if scale_factor is None:
+            scale_factor = random.uniform(0.8, 1.2)
+
+        h, w = image.shape[:2]
+        new_h, new_w = int(h * scale_factor), int(w * scale_factor)
+
+        # Resize image
+        scaled = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        # If scaled down, pad to original size
+        if scale_factor < 1.0:
+            top = (h - new_h) // 2
+            bottom = h - new_h - top
+            left = (w - new_w) // 2
+            right = w - new_w - left
+            scaled = cv2.copyMakeBorder(scaled, top, bottom, left, right,
+                                       cv2.BORDER_CONSTANT, value=(0, 0, 0))
+        # If scaled up, crop to original size
+        else:
+            top = (new_h - h) // 2
+            left = (new_w - w) // 2
+            scaled = scaled[top:top+h, left:left+w]
+
+        return scaled
+
+    @staticmethod
+    def augment_translation(image: np.ndarray, tx: Optional[int] = None,
+                           ty: Optional[int] = None) -> np.ndarray:
+        """Apply translation (shift).
+
+        Args:
+            image: Input image
+            tx: Translation in x direction (if None, random within ±10% of width)
+            ty: Translation in y direction (if None, random within ±10% of height)
+
+        Returns:
+            Translated image
+        """
+        h, w = image.shape[:2]
+
+        if tx is None:
+            tx = int(random.uniform(-0.1, 0.1) * w)
+        if ty is None:
+            ty = int(random.uniform(-0.1, 0.1) * h)
+
+        matrix = np.float32([[1, 0, tx], [0, 1, ty]])
+        return cv2.warpAffine(image, matrix, (w, h),
+                             borderMode=cv2.BORDER_CONSTANT,
+                             borderValue=(0, 0, 0))
+
+    @staticmethod
+    def augment_brightness(image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
+        """Apply brightness adjustment.
+
+        Args:
+            image: Input image
+            factor: Brightness factor (if None, randomly chosen from 0.7 to 1.3)
+                   1.0 = no change, <1.0 = darker, >1.0 = brighter
+
+        Returns:
+            Brightness-adjusted image
+        """
+        if factor is None:
+            factor = random.uniform(0.7, 1.3)
+
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+        hsv[:, :, 2] = np.clip(hsv[:, :, 2] * factor, 0, 255)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    @staticmethod
+    def augment_contrast(image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
+        """Apply contrast adjustment.
+
+        Args:
+            image: Input image
+            factor: Contrast factor (if None, randomly chosen from 0.7 to 1.3)
+                   1.0 = no change, <1.0 = less contrast, >1.0 = more contrast
+
+        Returns:
+            Contrast-adjusted image
+        """
+        if factor is None:
+            factor = random.uniform(0.7, 1.3)
+
+        # Convert to LAB color space for better contrast adjustment
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+        mean_l = lab[:, :, 0].mean()
+        lab[:, :, 0] = np.clip((lab[:, :, 0] - mean_l) * factor + mean_l, 0, 255)
+        return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+    @staticmethod
+    def augment_saturation(image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
+        """Apply saturation adjustment.
+
+        Args:
+            image: Input image
+            factor: Saturation factor (if None, randomly chosen from 0.7 to 1.3)
+                   1.0 = no change, <1.0 = less saturated, >1.0 = more saturated
+
+        Returns:
+            Saturation-adjusted image
+        """
+        if factor is None:
+            factor = random.uniform(0.7, 1.3)
+
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1] * factor, 0, 255)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    @staticmethod
+    def augment_hue(image: np.ndarray, shift: Optional[int] = None) -> np.ndarray:
+        """Apply hue shift.
+
+        Args:
+            image: Input image
+            shift: Hue shift in degrees (if None, randomly chosen from -20 to +20)
+
+        Returns:
+            Hue-shifted image
+        """
+        if shift is None:
+            shift = random.randint(-20, 20)
+
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.int16)
+        hsv[:, :, 0] = (hsv[:, :, 0] + shift) % 180
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    @staticmethod
+    def augment_gaussian_blur(image: np.ndarray, kernel_size: Optional[int] = None) -> np.ndarray:
+        """Apply Gaussian blur.
+
+        Args:
+            image: Input image
+            kernel_size: Blur kernel size (if None, randomly chosen from [3, 5, 7])
+
+        Returns:
+            Blurred image
+        """
+        if kernel_size is None:
+            kernel_size = random.choice([3, 5, 7])
+
+        # Ensure kernel size is odd
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+
+        return cv2.GaussianBlur(image, (kernel_size, kernel_size), 0)
+
+    @staticmethod
+    def augment_motion_blur(image: np.ndarray, kernel_size: Optional[int] = None) -> np.ndarray:
+        """Apply motion blur.
+
+        Args:
+            image: Input image
+            kernel_size: Motion blur kernel size (if None, randomly chosen from [5, 7, 9])
+
+        Returns:
+            Motion-blurred image
+        """
+        if kernel_size is None:
+            kernel_size = random.choice([5, 7, 9])
+
+        # Create motion blur kernel
+        kernel = np.zeros((kernel_size, kernel_size))
+        kernel[int((kernel_size - 1) / 2), :] = np.ones(kernel_size)
+        kernel = kernel / kernel_size
+
+        return cv2.filter2D(image, -1, kernel)
+
+    @staticmethod
+    def augment_gaussian_noise(image: np.ndarray, sigma: Optional[float] = None) -> np.ndarray:
+        """Apply Gaussian noise.
+
+        Args:
+            image: Input image
+            sigma: Standard deviation of noise (if None, randomly chosen from 5 to 15)
+
+        Returns:
+            Noisy image
+        """
+        if sigma is None:
+            sigma = random.uniform(5, 15)
+
+        noise = np.random.normal(0, sigma, image.shape).astype(np.float32)
+        noisy = np.clip(image.astype(np.float32) + noise, 0, 255)
+        return noisy.astype(np.uint8)
+
+    @staticmethod
+    def augment_salt_pepper_noise(image: np.ndarray, amount: Optional[float] = None) -> np.ndarray:
+        """Apply salt and pepper noise.
+
+        Args:
+            image: Input image
+            amount: Proportion of pixels to be noisy (if None, randomly chosen from 0.01 to 0.05)
+
+        Returns:
+            Noisy image
+        """
+        if amount is None:
+            amount = random.uniform(0.01, 0.05)
+
+        noisy = image.copy()
+        h, w = image.shape[:2]
+
+        # Salt (white) noise
+        num_salt = int(amount * h * w / 2)
+        coords = [np.random.randint(0, i - 1, num_salt) for i in (h, w)]
+        noisy[coords[0], coords[1]] = 255
+
+        # Pepper (black) noise
+        num_pepper = int(amount * h * w / 2)
+        coords = [np.random.randint(0, i - 1, num_pepper) for i in (h, w)]
+        noisy[coords[0], coords[1]] = 0
+
+        return noisy
+
+    @staticmethod
+    def augment_sharpness(image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
+        """Apply sharpness enhancement.
+
+        Args:
+            image: Input image
+            factor: Sharpness factor (if None, randomly chosen from 0.5 to 1.5)
+                   Higher values = sharper image
+
+        Returns:
+            Sharpened image
+        """
+        if factor is None:
+            factor = random.uniform(0.5, 1.5)
+
+        # Sharpening kernel
+        kernel = np.array([[-1, -1, -1],
+                          [-1, 9, -1],
+                          [-1, -1, -1]]) * factor
+
+        sharpened = cv2.filter2D(image, -1, kernel)
+        return np.clip(sharpened, 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def augment_edge_enhance(image: np.ndarray) -> np.ndarray:
+        """Apply edge enhancement.
+
+        Args:
+            image: Input image
+
+        Returns:
+            Edge-enhanced image
+        """
+        # Edge detection kernel
+        kernel = np.array([[-1, -1, -1],
+                          [-1, 8, -1],
+                          [-1, -1, -1]])
+
+        edges = cv2.filter2D(image, -1, kernel)
+        enhanced = cv2.addWeighted(image, 1.0, edges, 0.3, 0)
+        return np.clip(enhanced, 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def get_augmentation_function(aug_type: str) -> Optional[Callable]:
+        """Get augmentation function by name.
+
+        Args:
+            aug_type: Augmentation type name
+
+        Returns:
+            Augmentation function or None if not found
+        """
+        augmentation_map = {
+            'horizontal_flip': ImageAugmentor.augment_horizontal_flip,
+            'vertical_flip': ImageAugmentor.augment_vertical_flip,
+            'rotation': ImageAugmentor.augment_rotation,
+            'scaling': ImageAugmentor.augment_scaling,
+            'translation': ImageAugmentor.augment_translation,
+            'brightness': ImageAugmentor.augment_brightness,
+            'contrast': ImageAugmentor.augment_contrast,
+            'saturation': ImageAugmentor.augment_saturation,
+            'hue': ImageAugmentor.augment_hue,
+            'gaussian_blur': ImageAugmentor.augment_gaussian_blur,
+            'motion_blur': ImageAugmentor.augment_motion_blur,
+            'gaussian_noise': ImageAugmentor.augment_gaussian_noise,
+            'salt_pepper_noise': ImageAugmentor.augment_salt_pepper_noise,
+            'sharpness': ImageAugmentor.augment_sharpness,
+            'edge_enhance': ImageAugmentor.augment_edge_enhance,
+        }
+        return augmentation_map.get(aug_type)
+
+
 class TrainingObject:
     """Represents a training object with image and metadata."""
 
@@ -113,14 +491,16 @@ class TrainingObject:
 class TrainingService:
     """Service for managing object training dataset and model training."""
 
-    def __init__(self, data_dir: str = "data/training"):
+    def __init__(self, data_dir: str = "data/training", config: Optional[Dict[str, Any]] = None):
         """Initialize training service.
 
         Args:
             data_dir: Base directory for training data
+            config: Optional configuration dictionary
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.config = config or {}
 
         self.objects: List[TrainingObject] = []
         self._load_objects()
@@ -254,11 +634,12 @@ class TrainingService:
             logger.error(f"Error exporting dataset: {e}")
             return False
 
-    def _export_all_objects(self, export_dir: str) -> bool:
+    def _export_all_objects(self, export_dir: str, config: Optional[Dict[str, Any]] = None) -> bool:
         """Export all objects as training dataset in YOLO format.
 
         Args:
             export_dir: Directory to export dataset
+            config: Optional configuration dictionary with augmentation settings
 
         Returns:
             True if exported successfully, False otherwise
@@ -272,18 +653,114 @@ class TrainingService:
                 logger.warning("No objects to export")
                 return False
 
-            return self._export_yolo_format(export_path, all_objects)
+            # Get augmentation settings from config
+            enable_augmentation = False
+            augmentation_factor = 3
+            augmentation_types = ['horizontal_flip', 'rotation', 'brightness']
+
+            if config:
+                enable_augmentation = config.get('enable_augmentation', False)
+                augmentation_factor = config.get('augmentation_factor', 3)
+                augmentation_types = config.get('augmentation_types', augmentation_types)
+
+            return self._export_yolo_format(
+                export_path,
+                all_objects,
+                enable_augmentation=enable_augmentation,
+                augmentation_factor=augmentation_factor,
+                augmentation_types=augmentation_types
+            )
 
         except Exception as e:
             logger.error(f"Error exporting all objects: {e}")
             return False
 
-    def _export_yolo_format(self, export_dir: Path, objects: List[TrainingObject]) -> bool:
-        """Export dataset in YOLO format.
+    def _apply_augmentations(self, image: np.ndarray, augmentation_types: List[str],
+                            augmentation_factor: int) -> List[tuple[np.ndarray, str]]:
+        """Apply augmentations to an image with intelligent deterministic vs stochastic handling.
+
+        This implements a hybrid augmentation approach:
+
+        - DETERMINISTIC methods (horizontal_flip, vertical_flip, edge_enhance):
+          Applied exactly ONCE, regardless of augmentation_factor, since they always
+          produce the same result.
+
+        - STOCHASTIC methods (rotation, brightness, noise, etc.):
+          Applied augmentation_factor times, with each application using different
+          random parameters to create diverse variations.
+
+        Args:
+            image: Input image
+            augmentation_types: List of augmentation type names to apply
+            augmentation_factor: Number of times to apply STOCHASTIC methods
+                                (Deterministic methods are always applied once)
+                                Example: factor=3 means stochastic methods applied 3 times
+
+        Returns:
+            List of tuples (augmented_image, augmentation_identifier)
+            where augmentation_identifier is formatted as "method_name_N" (e.g., "rotation_1")
+            or "method_name" for deterministic methods
+        """
+        augmented_images = []
+
+        # Apply each selected augmentation method
+        for aug_type in augmentation_types:
+            aug_func = ImageAugmentor.get_augmentation_function(aug_type)
+            if aug_func:
+                # Determine iteration count based on method type
+                if aug_type in ImageAugmentor.DETERMINISTIC_METHODS:
+                    # Deterministic: apply exactly once
+                    iterations = 1
+                    iteration_note = "deterministic"
+                elif aug_type in ImageAugmentor.STOCHASTIC_METHODS:
+                    # Stochastic: apply augmentation_factor times
+                    iterations = augmentation_factor
+                    iteration_note = "stochastic"
+                else:
+                    # Unknown method: treat as stochastic (safe default)
+                    logger.warning(f"Unknown augmentation type '{aug_type}', treating as stochastic")
+                    iterations = augmentation_factor
+                    iteration_note = "unknown"
+
+                # Apply augmentation 'iterations' times
+                for i in range(iterations):
+                    try:
+                        # Apply augmentation to original image
+                        # Stochastic methods generate new random parameters each time
+                        aug_image = aug_func(image.copy())
+
+                        # Create unique identifier
+                        if iterations == 1:
+                            # Deterministic: simple identifier without number
+                            aug_identifier = aug_type
+                        else:
+                            # Stochastic: include iteration number
+                            aug_identifier = f"{aug_type}_{i+1}"
+
+                        augmented_images.append((aug_image, aug_identifier))
+                    except Exception as e:
+                        logger.warning(f"Failed to apply augmentation '{aug_type}' "
+                                     f"(iteration {i+1}/{iterations}, {iteration_note}): {e}")
+
+        return augmented_images
+
+    def _export_yolo_format(self, export_dir: Path, objects: List[TrainingObject],
+                           enable_augmentation: bool = False,
+                           augmentation_factor: int = 3,
+                           augmentation_types: Optional[List[str]] = None) -> bool:
+        """Export dataset in YOLO format with optional data augmentation.
+
+        The augmentation factor is applied per selected method, not per original image.
+        This means each augmentation method is applied multiple times to generate diverse
+        variations with different random parameters.
 
         Args:
             export_dir: Export directory
             objects: List of objects to export
+            enable_augmentation: Whether to apply data augmentation
+            augmentation_factor: How many times to apply EACH augmentation method
+                                Example: 3 images × 5 methods × 3 factor = 3 + 45 = 48 total
+            augmentation_types: List of augmentation types to apply
 
         Returns:
             True if successful, False otherwise
@@ -299,10 +776,45 @@ class TrainingService:
             class_labels = sorted(list(set(obj.label for obj in objects)))
             class_map = {label: idx for idx, label in enumerate(class_labels)}
 
+            # Counter for images
+            img_counter = 0
+
+            # Calculate total images with hybrid deterministic/stochastic approach
+            if enable_augmentation and augmentation_types:
+                # Separate deterministic and stochastic methods
+                deterministic_methods = [m for m in augmentation_types if m in ImageAugmentor.DETERMINISTIC_METHODS]
+                stochastic_methods = [m for m in augmentation_types if m in ImageAugmentor.STOCHASTIC_METHODS]
+
+                # Deterministic: 1 image per method
+                deterministic_count = len(deterministic_methods) * 1
+
+                # Stochastic: augmentation_factor images per method
+                stochastic_count = len(stochastic_methods) * augmentation_factor
+
+                # Total augmented images per original image
+                augmented_per_image = deterministic_count + stochastic_count
+                total_augmented = len(objects) * augmented_per_image
+                total_images = len(objects) + total_augmented
+            else:
+                total_images = len(objects)
+                deterministic_methods = []
+                stochastic_methods = []
+
+            logger.info(f"Exporting dataset with augmentation: {enable_augmentation}")
+            if enable_augmentation:
+                logger.info(f"Augmentation approach: Hybrid (deterministic 1×, stochastic {augmentation_factor}×)")
+                logger.info(f"Selected augmentation methods ({len(augmentation_types)} total):")
+                if deterministic_methods:
+                    logger.info(f"  • Deterministic (1× each): {', '.join(deterministic_methods)}")
+                if stochastic_methods:
+                    logger.info(f"  • Stochastic ({augmentation_factor}× each): {', '.join(stochastic_methods)}")
+                logger.info(f"Total images to export: {total_images} = {len(objects)} original + "
+                          f"{total_augmented} augmented ({len(deterministic_methods)}×1 + {len(stochastic_methods)}×{augmentation_factor} per image)")
+
             # Export images and labels
-            for idx, obj in enumerate(objects):
-                # Save image
-                img_name = f"{idx:04d}.jpg"
+            for obj_idx, obj in enumerate(objects):
+                # Save original image
+                img_name = f"{img_counter:04d}.jpg"
                 img_path = images_dir / img_name
                 cv2.imwrite(str(img_path), obj.image)
 
@@ -311,16 +823,48 @@ class TrainingService:
                 class_idx = class_map[obj.label]
 
                 # For cropped objects, bbox is the full image
-                label_path = labels_dir / f"{idx:04d}.txt"
+                label_path = labels_dir / f"{img_counter:04d}.txt"
                 with open(label_path, 'w') as f:
                     # Full image bbox in normalized YOLO format
                     f.write(f"{class_idx} 0.5 0.5 1.0 1.0\n")
+
+                img_counter += 1
+
+                # Apply augmentations if enabled
+                if enable_augmentation and augmentation_types:
+                    # Get augmented images with their identifiers
+                    # Each method is applied augmentation_factor times
+                    augmented_images = self._apply_augmentations(
+                        obj.image, augmentation_types, augmentation_factor
+                    )
+
+                    # Save each augmented image with descriptive filename
+                    for aug_image, aug_identifier in augmented_images:
+                        # Create filename with augmentation identifier
+                        # Example: 0001_rotation_1.jpg, 0001_rotation_2.jpg, 0001_brightness_1.jpg, etc.
+                        aug_img_name = f"{img_counter:04d}_{aug_identifier}.jpg"
+                        aug_img_path = images_dir / aug_img_name
+                        cv2.imwrite(str(aug_img_path), aug_image)
+
+                        # Create label file for augmented image
+                        aug_h, aug_w = aug_image.shape[:2]
+                        aug_label_path = labels_dir / f"{img_counter:04d}_{aug_identifier}.txt"
+                        with open(aug_label_path, 'w') as f:
+                            # Full image bbox in normalized YOLO format
+                            f.write(f"{class_idx} 0.5 0.5 1.0 1.0\n")
+
+                        img_counter += 1
+
+                # Log progress every 10 objects
+                if (obj_idx + 1) % 10 == 0:
+                    logger.info(f"Exported {obj_idx + 1}/{len(objects)} objects "
+                              f"({img_counter} total images so far)")
 
             # Create data.yaml
             yaml_content = {
                 'path': str(export_dir.absolute()),
                 'train': 'images/train',
-                'val': 'images/train',  # Use same for validation
+                'val': 'labels/train',  # Use same for validation
                 'names': {idx: label for label, idx in class_map.items()}
             }
 
@@ -329,7 +873,20 @@ class TrainingService:
                 import yaml
                 yaml.dump(yaml_content, f)
 
-            logger.info(f"Exported {len(objects)} objects to {export_dir}")
+            logger.info(f"Export complete: {len(objects)} objects exported as {img_counter} total images")
+            if enable_augmentation:
+                # Calculate actual multiplier with hybrid approach
+                deterministic_methods = [m for m in augmentation_types if m in ImageAugmentor.DETERMINISTIC_METHODS]
+                stochastic_methods = [m for m in augmentation_types if m in ImageAugmentor.STOCHASTIC_METHODS]
+                augmented_per_image = len(deterministic_methods) + (len(stochastic_methods) * augmentation_factor)
+                multiplier = augmented_per_image + 1  # +1 for original
+
+                logger.info(f"Augmentation: Applied {len(deterministic_methods)} deterministic (1×) + "
+                          f"{len(stochastic_methods)} stochastic ({augmentation_factor}×) methods")
+                logger.info(f"Dataset increased by {multiplier}× = 1 original + {augmented_per_image} augmented per image")
+                logger.info(f"Each original image generated {augmented_per_image} augmented variations "
+                          f"({len(deterministic_methods)} deterministic + {len(stochastic_methods)}×{augmentation_factor} stochastic)")
+
             return True
 
         except Exception as e:
@@ -416,9 +973,9 @@ class TrainingService:
             if memory_info:
                 logger.info(f"GPU Memory: {memory_info['free_mb']:.0f}MB free / {memory_info['total_mb']:.0f}MB total")
 
-            # Export dataset first (uses all objects)
+            # Export dataset first (uses all objects with augmentation if configured)
             dataset_dir = self.data_dir / "exported_dataset"
-            if not self._export_all_objects(str(dataset_dir)):
+            if not self._export_all_objects(str(dataset_dir), config=self.config):
                 logger.error("Failed to export dataset for training")
                 return False
 

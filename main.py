@@ -161,8 +161,8 @@ class MainWindow:
         # Load model in background
         threading.Thread(target=self.inference_service.load_model, daemon=True).start()
 
-        # Training service
-        self.training_service = TrainingService(data_dir="data/training")
+        # Training service (pass config for augmentation settings)
+        self.training_service = TrainingService(data_dir="data/training", config=self.config)
 
         # Gemini service
         api_key = self.config.get('gemini_api_key', '')
@@ -1820,6 +1820,10 @@ class MainWindow:
                 max_tokens=new_config.get('gemini_max_tokens'),
                 persona=new_config.get('chatbot_persona', '')
             )
+
+            # Update training service config (for augmentation settings)
+            self.training_service.config = new_config
+            logger.info("Training service config updated with new augmentation settings")
 
             # Update webcam settings if changed
             new_camera_index = new_config.get('last_webcam_index', 0)

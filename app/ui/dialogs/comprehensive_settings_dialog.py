@@ -280,6 +280,31 @@ class ComprehensiveSettingsDialog:
             value=self.config.get('debug_mode', False)
         )
 
+        # Data Augmentation settings
+        self.enable_augmentation_var = tk.BooleanVar(
+            value=self.config.get('enable_augmentation', False)
+        )
+        self.augmentation_factor_var = tk.IntVar(
+            value=self.config.get('augmentation_factor', 3)
+        )
+        # Individual augmentation type checkboxes
+        aug_types = self.config.get('augmentation_types', ['horizontal_flip', 'rotation', 'brightness'])
+        self.aug_horizontal_flip_var = tk.BooleanVar(value='horizontal_flip' in aug_types)
+        self.aug_vertical_flip_var = tk.BooleanVar(value='vertical_flip' in aug_types)
+        self.aug_rotation_var = tk.BooleanVar(value='rotation' in aug_types)
+        self.aug_scaling_var = tk.BooleanVar(value='scaling' in aug_types)
+        self.aug_translation_var = tk.BooleanVar(value='translation' in aug_types)
+        self.aug_brightness_var = tk.BooleanVar(value='brightness' in aug_types)
+        self.aug_contrast_var = tk.BooleanVar(value='contrast' in aug_types)
+        self.aug_saturation_var = tk.BooleanVar(value='saturation' in aug_types)
+        self.aug_hue_var = tk.BooleanVar(value='hue' in aug_types)
+        self.aug_gaussian_blur_var = tk.BooleanVar(value='gaussian_blur' in aug_types)
+        self.aug_motion_blur_var = tk.BooleanVar(value='motion_blur' in aug_types)
+        self.aug_gaussian_noise_var = tk.BooleanVar(value='gaussian_noise' in aug_types)
+        self.aug_salt_pepper_noise_var = tk.BooleanVar(value='salt_pepper_noise' in aug_types)
+        self.aug_sharpness_var = tk.BooleanVar(value='sharpness' in aug_types)
+        self.aug_edge_enhance_var = tk.BooleanVar(value='edge_enhance' in aug_types)
+
         # Chatbot settings
         self.analysis_mode_var = tk.StringVar(
             value=self.config.get('analysis_mode', 'yolo_detection')
@@ -336,6 +361,24 @@ class ComprehensiveSettingsDialog:
             'max_tokens': self.max_tokens_var.get(),
             'timeout': self.timeout_var.get(),
             'chatbot_persona': self.chatbot_persona_var.get(),
+            # Data Augmentation settings
+            'enable_augmentation': self.enable_augmentation_var.get(),
+            'augmentation_factor': self.augmentation_factor_var.get(),
+            'aug_horizontal_flip': self.aug_horizontal_flip_var.get(),
+            'aug_vertical_flip': self.aug_vertical_flip_var.get(),
+            'aug_rotation': self.aug_rotation_var.get(),
+            'aug_scaling': self.aug_scaling_var.get(),
+            'aug_translation': self.aug_translation_var.get(),
+            'aug_brightness': self.aug_brightness_var.get(),
+            'aug_contrast': self.aug_contrast_var.get(),
+            'aug_saturation': self.aug_saturation_var.get(),
+            'aug_hue': self.aug_hue_var.get(),
+            'aug_gaussian_blur': self.aug_gaussian_blur_var.get(),
+            'aug_motion_blur': self.aug_motion_blur_var.get(),
+            'aug_gaussian_noise': self.aug_gaussian_noise_var.get(),
+            'aug_salt_pepper_noise': self.aug_salt_pepper_noise_var.get(),
+            'aug_sharpness': self.aug_sharpness_var.get(),
+            'aug_edge_enhance': self.aug_edge_enhance_var.get(),
         }
 
     def _setup_change_tracking(self):
@@ -349,7 +392,14 @@ class ComprehensiveSettingsDialog:
             self.model_architecture_var, self.yolo_version_var, self.yolo_size_var,
             self.debug_mode_var, self.analysis_mode_var,
             self.api_key_var, self.gemini_model_var, self.temperature_var, self.max_tokens_var,
-            self.timeout_var, self.chatbot_persona_var
+            self.timeout_var, self.chatbot_persona_var,
+            # Augmentation variables
+            self.enable_augmentation_var, self.augmentation_factor_var,
+            self.aug_horizontal_flip_var, self.aug_vertical_flip_var, self.aug_rotation_var,
+            self.aug_scaling_var, self.aug_translation_var, self.aug_brightness_var,
+            self.aug_contrast_var, self.aug_saturation_var, self.aug_hue_var,
+            self.aug_gaussian_blur_var, self.aug_motion_blur_var, self.aug_gaussian_noise_var,
+            self.aug_salt_pepper_noise_var, self.aug_sharpness_var, self.aug_edge_enhance_var
         ]
 
         for var in variables:
@@ -978,6 +1028,176 @@ class ComprehensiveSettingsDialog:
         )
         device_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
 
+        # Data Augmentation Section
+        augmentation_section, augmentation_content = self._create_section_frame(scrollable_frame, "🔄 Data Augmentation")
+        augmentation_section.pack(fill='x', pady=(0, 10))
+
+        # Enable augmentation checkbox
+        self._create_checkbox(
+            augmentation_content,
+            "Enable Data Augmentation",
+            self.enable_augmentation_var
+        ).pack(anchor='w', pady=5)
+
+        # Description for augmentation
+        aug_desc = tk.Label(
+            augmentation_content,
+            text="Data augmentation creates variations of training images to improve model generalization and reduce overfitting.\nAugmentation methods are categorized into two types:\n• Deterministic (1×): Same result every time - applied once (horizontal_flip, vertical_flip, edge_enhance)\n• Stochastic (×N): Random parameters - applied multiple times based on factor below (rotation, brightness, etc.)",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        aug_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
+        # Augmentation factor control
+        factor_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
+        factor_frame.pack(fill='x', pady=(0, 10))
+
+        tk.Label(
+            factor_frame,
+            text="Augmentation Factor (for stochastic methods):",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 9, 'bold')
+        ).pack(side='left', padx=(0, 10))
+
+        factor_spin = tk.Spinbox(
+            factor_frame,
+            from_=1, to=10, increment=1,
+            textvariable=self.augmentation_factor_var,
+            bg=self.COLORS['bg_tertiary'],
+            fg=self.COLORS['text_primary'],
+            width=6
+        )
+        factor_spin.pack(side='left', padx=(0, 10))
+
+        tk.Label(
+            factor_frame,
+            text="(Higher = more variations, longer training time)",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8, 'italic')
+        ).pack(side='left')
+
+        # Dataset calculation info
+        factor_info = tk.Label(
+            augmentation_content,
+            text="📊 Example Calculation (10 images, factor=3, 2 deterministic + 2 stochastic methods):\n• Result = 10 original + (10 × 2×1) + (10 × 2×3) = 10 + 20 + 60 = 90 total images\n• Deterministic methods applied once, stochastic methods applied 3× with different random parameters",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['accent_primary'],
+            font=('Segoe UI', 8, 'italic'),
+            justify='left',
+            wraplength=500
+        )
+        factor_info.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
+        # Augmentation types header
+        aug_types_label = tk.Label(
+            augmentation_content,
+            text="Augmentation Types",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['accent_primary'],
+            font=('Segoe UI', 10, 'bold')
+        )
+        aug_types_label.pack(anchor='w', pady=(5, 5))
+
+        # Geometric Augmentations
+        geom_label = tk.Label(
+            augmentation_content,
+            text="Geometric Transformations:",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 9, 'bold')
+        )
+        geom_label.pack(anchor='w', pady=(5, 2))
+
+        geom_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
+        geom_frame.pack(fill='x', pady=2)
+
+        self._create_checkbox(geom_frame, "Horizontal Flip (1×)", self.aug_horizontal_flip_var).pack(side='left', padx=(0, 15))
+        self._create_checkbox(geom_frame, "Vertical Flip (1×)", self.aug_vertical_flip_var).pack(side='left', padx=(0, 15))
+        self._create_checkbox(geom_frame, "Rotation ±30° (×N)", self.aug_rotation_var).pack(side='left', padx=(0, 15))
+
+        geom_frame2 = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
+        geom_frame2.pack(fill='x', pady=2)
+
+        self._create_checkbox(geom_frame2, "Scaling 0.8-1.2x (×N)", self.aug_scaling_var).pack(side='left', padx=(0, 15))
+        self._create_checkbox(geom_frame2, "Translation/Shift (×N)", self.aug_translation_var).pack(side='left', padx=(0, 15))
+
+        # Color/Brightness Augmentations
+        color_label = tk.Label(
+            augmentation_content,
+            text="Color & Lighting Adjustments:",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 9, 'bold')
+        )
+        color_label.pack(anchor='w', pady=(10, 2))
+
+        color_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
+        color_frame.pack(fill='x', pady=2)
+
+        self._create_checkbox(color_frame, "Brightness (×N)", self.aug_brightness_var).pack(side='left', padx=(0, 15))
+        self._create_checkbox(color_frame, "Contrast (×N)", self.aug_contrast_var).pack(side='left', padx=(0, 15))
+        self._create_checkbox(color_frame, "Saturation (×N)", self.aug_saturation_var).pack(side='left', padx=(0, 15))
+
+        color_frame2 = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
+        color_frame2.pack(fill='x', pady=2)
+
+        self._create_checkbox(color_frame2, "Hue Shift (×N)", self.aug_hue_var).pack(side='left', padx=(0, 15))
+
+        # Blur/Noise Augmentations
+        blur_label = tk.Label(
+            augmentation_content,
+            text="Blur & Noise Effects:",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 9, 'bold')
+        )
+        blur_label.pack(anchor='w', pady=(10, 2))
+
+        blur_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
+        blur_frame.pack(fill='x', pady=2)
+
+        self._create_checkbox(blur_frame, "Gaussian Blur (×N)", self.aug_gaussian_blur_var).pack(side='left', padx=(0, 15))
+        self._create_checkbox(blur_frame, "Motion Blur (×N)", self.aug_motion_blur_var).pack(side='left', padx=(0, 15))
+
+        blur_frame2 = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
+        blur_frame2.pack(fill='x', pady=2)
+
+        self._create_checkbox(blur_frame2, "Gaussian Noise (×N)", self.aug_gaussian_noise_var).pack(side='left', padx=(0, 15))
+        self._create_checkbox(blur_frame2, "Salt & Pepper Noise (×N)", self.aug_salt_pepper_noise_var).pack(side='left', padx=(0, 15))
+
+        # Sharpness/Detail Augmentations
+        sharp_label = tk.Label(
+            augmentation_content,
+            text="Sharpness & Detail Enhancement:",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 9, 'bold')
+        )
+        sharp_label.pack(anchor='w', pady=(10, 2))
+
+        sharp_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
+        sharp_frame.pack(fill='x', pady=2)
+
+        self._create_checkbox(sharp_frame, "Sharpness (×N)", self.aug_sharpness_var).pack(side='left', padx=(0, 15))
+        self._create_checkbox(sharp_frame, "Edge Enhancement (1×)", self.aug_edge_enhance_var).pack(side='left', padx=(0, 15))
+
+        # Recommended presets note
+        presets_note = tk.Label(
+            augmentation_content,
+            text="Recommended Presets:\n• Conservative (small datasets): Factor=3, Horizontal Flip (1×) + Rotation (3×) + Brightness (3×)\n• Moderate (medium datasets): Factor=5, add Vertical Flip (1×) + Scaling (5×) + Contrast (5×)\n• Aggressive (large datasets/overfitting): Factor=10, enable most augmentations\nNote: Deterministic methods (1×) always applied once; stochastic methods (×N) use the factor above.",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['warning'],
+            font=('Segoe UI', 8, 'italic'),
+            justify='left',
+            wraplength=500
+        )
+        presets_note.pack(anchor='w', pady=(10, 5), padx=(0, 0))
+
         # Debug Settings Section
         debug_section, debug_content = self._create_section_frame(scrollable_frame, "🐛 Debug Mode")
         debug_section.pack(fill='x', pady=(0, 10))
@@ -1524,7 +1744,25 @@ class ComprehensiveSettingsDialog:
             self.temperature_var.get() != self.original_values['temperature'] or
             self.max_tokens_var.get() != self.original_values['max_tokens'] or
             self.timeout_var.get() != self.original_values['timeout'] or
-            self.chatbot_persona_var.get() != self.original_values['chatbot_persona']
+            self.chatbot_persona_var.get() != self.original_values['chatbot_persona'] or
+            # Data Augmentation settings
+            self.enable_augmentation_var.get() != self.original_values['enable_augmentation'] or
+            self.augmentation_factor_var.get() != self.original_values['augmentation_factor'] or
+            self.aug_horizontal_flip_var.get() != self.original_values['aug_horizontal_flip'] or
+            self.aug_vertical_flip_var.get() != self.original_values['aug_vertical_flip'] or
+            self.aug_rotation_var.get() != self.original_values['aug_rotation'] or
+            self.aug_scaling_var.get() != self.original_values['aug_scaling'] or
+            self.aug_translation_var.get() != self.original_values['aug_translation'] or
+            self.aug_brightness_var.get() != self.original_values['aug_brightness'] or
+            self.aug_contrast_var.get() != self.original_values['aug_contrast'] or
+            self.aug_saturation_var.get() != self.original_values['aug_saturation'] or
+            self.aug_hue_var.get() != self.original_values['aug_hue'] or
+            self.aug_gaussian_blur_var.get() != self.original_values['aug_gaussian_blur'] or
+            self.aug_motion_blur_var.get() != self.original_values['aug_motion_blur'] or
+            self.aug_gaussian_noise_var.get() != self.original_values['aug_gaussian_noise'] or
+            self.aug_salt_pepper_noise_var.get() != self.original_values['aug_salt_pepper_noise'] or
+            self.aug_sharpness_var.get() != self.original_values['aug_sharpness'] or
+            self.aug_edge_enhance_var.get() != self.original_values['aug_edge_enhance']
         )
 
         # Update state and UI
@@ -1648,6 +1886,45 @@ class ComprehensiveSettingsDialog:
             self.config['gemini_max_tokens'] = self.max_tokens_var.get()
             self.config['gemini_timeout'] = self.timeout_var.get()
             self.config['chatbot_persona'] = self.chatbot_persona_var.get()
+
+            # Save Data Augmentation settings
+            self.config['enable_augmentation'] = self.enable_augmentation_var.get()
+            self.config['augmentation_factor'] = self.augmentation_factor_var.get()
+
+            # Collect enabled augmentation types
+            augmentation_types = []
+            if self.aug_horizontal_flip_var.get():
+                augmentation_types.append('horizontal_flip')
+            if self.aug_vertical_flip_var.get():
+                augmentation_types.append('vertical_flip')
+            if self.aug_rotation_var.get():
+                augmentation_types.append('rotation')
+            if self.aug_scaling_var.get():
+                augmentation_types.append('scaling')
+            if self.aug_translation_var.get():
+                augmentation_types.append('translation')
+            if self.aug_brightness_var.get():
+                augmentation_types.append('brightness')
+            if self.aug_contrast_var.get():
+                augmentation_types.append('contrast')
+            if self.aug_saturation_var.get():
+                augmentation_types.append('saturation')
+            if self.aug_hue_var.get():
+                augmentation_types.append('hue')
+            if self.aug_gaussian_blur_var.get():
+                augmentation_types.append('gaussian_blur')
+            if self.aug_motion_blur_var.get():
+                augmentation_types.append('motion_blur')
+            if self.aug_gaussian_noise_var.get():
+                augmentation_types.append('gaussian_noise')
+            if self.aug_salt_pepper_noise_var.get():
+                augmentation_types.append('salt_pepper_noise')
+            if self.aug_sharpness_var.get():
+                augmentation_types.append('sharpness')
+            if self.aug_edge_enhance_var.get():
+                augmentation_types.append('edge_enhance')
+
+            self.config['augmentation_types'] = augmentation_types
 
             # Save config to file
             self._save_config()
