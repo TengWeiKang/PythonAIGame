@@ -11,3 +11,5 @@ ultralytics>=8.0.0  # optional (YOLO); code stubs gracefully if missing
 transformers
 kernels
 google-genai
+pyyaml>=6.0
+tqdm>=4.65.0
