@@ -1373,9 +1373,17 @@ class MainWindow:
                 try:
                     progress.update_status("Preparing dataset...")
 
-                    base_model = self.config.get('preferred_model', 'yolo12n')
-                    epochs = self.config.get('train_epochs', 10)
+                    # Get training parameters from config
+                    # Note: training from scratch requires more epochs (default 100)
+                    epochs = self.config.get('train_epochs', 100)
                     batch_size = self.config.get('batch_size', 8)
+
+                    # Model architecture for training from scratch
+                    # Available: yolo11n.yaml (nano), yolo11s.yaml (small), yolo11m.yaml (medium)
+                    model_architecture = self.config.get('model_architecture', 'yolo11n.yaml')
+
+                    logger.info(f"Starting training from scratch with {epochs} epochs")
+                    logger.info(f"Model architecture: {model_architecture}")
 
                     # Define progress callback that updates the dialog
                     def on_progress(metrics):
@@ -1391,12 +1399,14 @@ class MainWindow:
                         return progress.is_cancelled()
 
                     # Start training with callbacks
+                    device = self.config.get('training_device', 'auto')
                     success = self.training_service.train_model(
-                        base_model=base_model,
                         epochs=epochs,
                         batch_size=batch_size,
                         progress_callback=on_progress,
-                        cancellation_check=check_cancelled
+                        cancellation_check=check_cancelled,
+                        device=device,
+                        model_architecture=model_architecture
                     )
 
                     # Check if cancelled

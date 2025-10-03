@@ -73,17 +73,18 @@ class InferenceService:
             self._model_loaded = False
             return False
 
-    def detect(self, image: np.ndarray) -> List[Dict[str, Any]]:
-        """Run object detection on image.
+    def detect(self, image: np.ndarray, max_size: int = 640) -> List[Dict[str, Any]]:
+        """Run object detection on image with automatic resizing and coordinate transformation.
 
         Args:
             image: Input image as numpy array (BGR format)
+            max_size: Maximum size for YOLO inference (default 640x640)
 
         Returns:
             List of detection dictionaries with keys:
                 - class_name: Object class name
                 - confidence: Detection confidence (0-1)
-                - bbox: Bounding box [x1, y1, x2, y2]
+                - bbox: Bounding box [x1, y1, x2, y2] in ORIGINAL image coordinates
                 - class_id: Class ID number
         """
         if not self._model_loaded:
@@ -92,16 +93,44 @@ class InferenceService:
                 return []
 
         try:
-            # Run inference
+            import cv2
+
+            # Get original image dimensions
+            original_height, original_width = image.shape[:2]
+            logger.debug(f"Original image size: {original_width}x{original_height}")
+
+            # Calculate resize parameters if image exceeds max_size
+            if original_height > max_size or original_width > max_size:
+                # Calculate scale factor to fit within max_size while maintaining aspect ratio
+                scale = max_size / max(original_height, original_width)
+                new_width = int(original_width * scale)
+                new_height = int(original_height * scale)
+
+                # Resize image for inference
+                resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+                # Calculate scale factors for coordinate transformation back to original size
+                scale_x = original_width / new_width
+                scale_y = original_height / new_height
+
+                logger.debug(f"Resized image to: {new_width}x{new_height} (scale_x={scale_x:.3f}, scale_y={scale_y:.3f})")
+            else:
+                # No resize needed - image already within limits
+                resized_image = image
+                scale_x = 1.0
+                scale_y = 1.0
+                logger.debug("No resize needed - image within size limits")
+
+            # Run inference on resized image
             results = self._model(
-                image,
+                resized_image,
                 conf=self.confidence_threshold,
                 iou=self.iou_threshold,
                 max_det=100,
                 verbose=False
             )
 
-            # Parse results
+            # Parse results and scale coordinates back to original image size
             detections = []
             if results and len(results) > 0:
                 result = results[0]
@@ -112,13 +141,30 @@ class InferenceService:
                     class_ids = result.boxes.cls.cpu().numpy().astype(int)
 
                     for box, conf, cls_id in zip(boxes, confidences, class_ids):
+                        # Get bounding box coordinates from resized image
+                        x1, y1, x2, y2 = box
+
+                        # Scale coordinates back to original image size
+                        x1_original = int(x1 * scale_x)
+                        y1_original = int(y1 * scale_y)
+                        x2_original = int(x2 * scale_x)
+                        y2_original = int(y2 * scale_y)
+
+                        # Ensure coordinates are within image bounds
+                        x1_original = max(0, min(x1_original, original_width))
+                        y1_original = max(0, min(y1_original, original_height))
+                        x2_original = max(0, min(x2_original, original_width))
+                        y2_original = max(0, min(y2_original, original_height))
+
                         detection = {
                             'class_name': result.names[cls_id],
                             'confidence': float(conf),
-                            'bbox': box.tolist(),
+                            'bbox': [x1_original, y1_original, x2_original, y2_original],
                             'class_id': int(cls_id)
                         }
                         detections.append(detection)
+
+                    logger.debug(f"Detected {len(detections)} objects with coordinates scaled to original size")
 
             return detections
 

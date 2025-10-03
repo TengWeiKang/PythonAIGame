@@ -153,6 +153,86 @@ class ComprehensiveSettingsDialog:
         self.dialog.grab_set()
         self.dialog.focus_set()
 
+    def _parse_architecture(self, architecture: str) -> tuple[tk.StringVar, tk.StringVar]:
+        """Parse architecture string to extract version and size.
+
+        Args:
+            architecture: Architecture string like 'yolo11n.yaml' or 'yolov8s.yaml'
+
+        Returns:
+            Tuple of (version_var, size_var) StringVars
+        """
+        try:
+            # Remove .yaml extension
+            arch_name = architecture.replace('.yaml', '')
+
+            # Parse version and size
+            # Formats: yolo11n, yolov8s, yolo12m, etc.
+            if 'yolov8' in arch_name.lower():
+                version = 'v8'
+                size = arch_name[-1]  # Last character is size
+            elif 'yolo11' in arch_name.lower():
+                version = 'v11'
+                size = arch_name[-1]
+            elif 'yolo12' in arch_name.lower():
+                version = 'v12'
+                size = arch_name[-1]
+            else:
+                # Default fallback
+                version = 'v11'
+                size = 'n'
+
+            # Map size to full name with letter
+            size_map = {
+                'n': 'n', 's': 's', 'm': 'm', 'l': 'l', 'x': 'x'
+            }
+            size = size_map.get(size.lower(), 'n')
+
+        except Exception as e:
+            logger.warning(f"Failed to parse architecture '{architecture}': {e}")
+            version = 'v11'
+            size = 'n'
+
+        return tk.StringVar(value=version), tk.StringVar(value=size)
+
+    def _get_model_architecture(self) -> str:
+        """Construct model architecture filename from version and size.
+
+        Returns:
+            Architecture filename like 'yolo11n.yaml'
+        """
+        try:
+            version = self.yolo_version_var.get().replace('v', '')  # v11 -> 11
+            size = self.yolo_size_var.get()  # Just the letter (n, s, m, l, x)
+
+            # Construct architecture: yolo + version + size + .yaml
+            if version == '8':
+                # YOLOv8 uses 'yolov8' prefix
+                return f"yolov8{size}.yaml"
+            else:
+                # YOLOv11, v12, etc. use 'yolo' prefix
+                return f"yolo{version}{size}.yaml"
+
+        except Exception as e:
+            logger.warning(f"Failed to construct architecture: {e}")
+            return "yolo11n.yaml"  # Fallback
+
+    def _on_yolo_setting_changed(self, *args):
+        """Called when YOLO version or size changes - update architecture display."""
+        try:
+            # Construct and update architecture display
+            architecture = self._get_model_architecture()
+            self.architecture_display_var.set(architecture)
+
+            # Also update the model_architecture_var for backward compatibility
+            self.model_architecture_var.set(architecture)
+
+            # Trigger general change tracking
+            self._on_setting_changed()
+
+        except Exception as e:
+            logger.error(f"Error updating YOLO architecture: {e}")
+
     def _initialize_variables(self):
         """Initialize all Tkinter variables with values from config."""
         # General settings
@@ -176,10 +256,23 @@ class ComprehensiveSettingsDialog:
 
         # Training settings
         self.train_epochs_var = tk.IntVar(
-            value=self.config.get('train_epochs', 50)
+            value=self.config.get('train_epochs', 100)
         )
         self.train_batch_size_var = tk.IntVar(
             value=self.config.get('batch_size', 16)
+        )
+        self.train_device_var = tk.StringVar(
+            value=self.config.get('training_device', 'auto')
+        )
+
+        # YOLO Model Selection - New granular controls
+        # Extract version and size from existing architecture, or use defaults
+        existing_arch = self.config.get('model_architecture', 'yolo11n.yaml')
+        self.yolo_version_var, self.yolo_size_var = self._parse_architecture(existing_arch)
+
+        # Keep model_architecture_var for backward compatibility
+        self.model_architecture_var = tk.StringVar(
+            value=self.config.get('model_architecture', 'yolo11n.yaml')
         )
 
         # Debug settings
@@ -214,6 +307,9 @@ class ComprehensiveSettingsDialog:
         # Camera info variable
         self.camera_info_var = tk.StringVar(value="Select a camera to test")
 
+        # Architecture display variable (shows constructed architecture)
+        self.architecture_display_var = tk.StringVar(value=self._get_model_architecture())
+
     def _store_original_values(self):
         """Store original values for cancel/revert functionality."""
         self.original_values = {
@@ -228,6 +324,10 @@ class ComprehensiveSettingsDialog:
             'iou_threshold': self.iou_threshold_var.get(),
             'train_epochs': self.train_epochs_var.get(),
             'train_batch_size': self.train_batch_size_var.get(),
+            'train_device': self.train_device_var.get(),
+            'model_architecture': self.model_architecture_var.get(),
+            'yolo_version': self.yolo_version_var.get(),
+            'yolo_size': self.yolo_size_var.get(),
             'debug_mode': self.debug_mode_var.get(),
             'analysis_mode': self.analysis_mode_var.get(),
             'api_key': self.api_key_var.get(),
@@ -245,10 +345,11 @@ class ComprehensiveSettingsDialog:
             self.language_var, self.data_dir_var, self.models_dir_var,
             self.results_dir_var, self.camera_index_var, self.camera_device_name_var,
             self.video_codec_var, self.confidence_threshold_var, self.iou_threshold_var,
-            self.train_epochs_var, self.train_batch_size_var, self.debug_mode_var,
-            self.analysis_mode_var, self.api_key_var, self.gemini_model_var,
-            self.temperature_var, self.max_tokens_var, self.timeout_var,
-            self.chatbot_persona_var
+            self.train_epochs_var, self.train_batch_size_var, self.train_device_var,
+            self.model_architecture_var, self.yolo_version_var, self.yolo_size_var,
+            self.debug_mode_var, self.analysis_mode_var,
+            self.api_key_var, self.gemini_model_var, self.temperature_var, self.max_tokens_var,
+            self.timeout_var, self.chatbot_persona_var
         ]
 
         for var in variables:
@@ -718,7 +819,7 @@ class ComprehensiveSettingsDialog:
         # Description for epochs
         epochs_desc = tk.Label(
             training_content,
-            text="Number of complete passes through the training dataset. More epochs = better accuracy but longer training time. Recommended: 50-100",
+            text="Number of complete passes through the training dataset. Training from scratch (no pretrained weights) requires MORE epochs than fine-tuning. Recommended: 100-200 for training from scratch.",
             bg=self.COLORS['bg_secondary'],
             fg=self.COLORS['text_muted'],
             font=('Segoe UI', 8),
@@ -749,6 +850,133 @@ class ComprehensiveSettingsDialog:
             wraplength=500
         )
         batch_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
+        # YOLO Model Configuration Section Header
+        model_config_label = tk.Label(
+            training_content,
+            text="YOLO Model Configuration",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['accent_primary'],
+            font=('Segoe UI', 10, 'bold')
+        )
+        model_config_label.pack(anchor='w', pady=(10, 5))
+
+        # YOLO Version dropdown
+        version_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
+        version_frame.pack(fill='x', pady=5)
+
+        tk.Label(version_frame, text="YOLO Version:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        version_combo = ttk.Combobox(version_frame, textvariable=self.yolo_version_var,
+                                     values=['v8', 'v11', 'v12'],
+                                     state='readonly', width=10)
+        version_combo.pack(side='left', padx=(5, 0))
+        version_combo.bind('<<ComboboxSelected>>', self._on_yolo_setting_changed)
+
+        # Version description
+        version_desc = tk.Label(
+            training_content,
+            text="• YOLOv8: Stable, widely tested, excellent documentation and community support\n• YOLOv11: Latest improvements, better accuracy with similar speed to v8 (Recommended)\n• YOLOv12: Newest version with cutting-edge features and optimizations",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        version_desc.pack(anchor='w', pady=(0, 10), padx=(20, 0))
+
+        # Model Size dropdown
+        size_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
+        size_frame.pack(fill='x', pady=5)
+
+        tk.Label(size_frame, text="Model Size:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        size_combo = ttk.Combobox(size_frame, textvariable=self.yolo_size_var,
+                                  values=['n', 's', 'm', 'l', 'x'],
+                                  state='readonly', width=10)
+        size_combo.pack(side='left', padx=(5, 0))
+        size_combo.bind('<<ComboboxSelected>>', self._on_yolo_setting_changed)
+
+        # Size description
+        size_desc = tk.Label(
+            training_content,
+            text="• nano (n): ~1.8M params, fastest training, lowest accuracy - ideal for testing and prototyping\n• small (s): ~11M params, good balance of speed and accuracy - recommended for most use cases\n• medium (m): ~25M params, better accuracy, moderate GPU memory usage\n• large (l): ~43M params, high accuracy, requires 6GB+ GPU memory\n• xlarge (x): ~68M params, best accuracy, needs 8GB+ GPU memory, slowest training",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        size_desc.pack(anchor='w', pady=(0, 10), padx=(20, 0))
+
+        # Architecture preview (shows what will be used)
+        preview_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
+        preview_frame.pack(fill='x', pady=5)
+
+        tk.Label(preview_frame, text="Architecture File:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        tk.Label(preview_frame, textvariable=self.architecture_display_var,
+                bg=self.COLORS['bg_tertiary'],
+                fg=self.COLORS['accent_primary'],
+                font=('Segoe UI', 9, 'bold'),
+                relief='sunken',
+                padx=10, pady=3).pack(side='left', padx=(5, 0))
+
+        # Important note about training from scratch
+        scratch_note = tk.Label(
+            training_content,
+            text="NOTE: Training from scratch (random weights, no pretrained base) requires 100+ epochs for good results.\nThe model will be completely specialized for your custom dataset.",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['warning'],
+            font=('Segoe UI', 8, 'italic'),
+            justify='left',
+            wraplength=500
+        )
+        scratch_note.pack(anchor='w', pady=(5, 10), padx=(0, 0))
+
+        # Training device dropdown
+        device_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
+        device_frame.pack(fill='x', pady=5)
+
+        tk.Label(device_frame, text="Training Device:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        device_combo = ttk.Combobox(device_frame, textvariable=self.train_device_var,
+                                    values=['auto', 'cuda', 'mps', 'cpu'], state='readonly', width=15)
+        device_combo.pack(side='left', padx=(5, 0))
+
+        # Detect current device and show as label
+        device_detect_button = ttk.Button(
+            device_frame,
+            text="🔍 Detect",
+            command=self._detect_training_device,
+            width=10
+        )
+        device_detect_button.pack(side='left', padx=(5, 0))
+
+        self.detected_device_label = tk.Label(
+            device_frame,
+            text="",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8)
+        )
+        self.detected_device_label.pack(side='left', padx=(10, 0))
+
+        # Description for training device
+        device_desc = tk.Label(
+            training_content,
+            text="Device for model training:\n• Auto: Automatically detect and use the best available device (Recommended)\n• CUDA: Use NVIDIA GPU (requires CUDA-compatible GPU)\n• MPS: Use Apple Metal (Mac only, requires M1/M2/M3 chip)\n• CPU: Use CPU only (slower but works everywhere)\n\nGPU training is typically 10-50x faster than CPU training.",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        device_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
 
         # Debug Settings Section
         debug_section, debug_content = self._create_section_frame(scrollable_frame, "🐛 Debug Mode")
@@ -1285,6 +1513,10 @@ class ComprehensiveSettingsDialog:
             self.iou_threshold_var.get() != self.original_values['iou_threshold'] or
             self.train_epochs_var.get() != self.original_values['train_epochs'] or
             self.train_batch_size_var.get() != self.original_values['train_batch_size'] or
+            self.train_device_var.get() != self.original_values['train_device'] or
+            self.model_architecture_var.get() != self.original_values['model_architecture'] or
+            self.yolo_version_var.get() != self.original_values['yolo_version'] or
+            self.yolo_size_var.get() != self.original_values['yolo_size'] or
             self.debug_mode_var.get() != self.original_values['debug_mode'] or
             self.analysis_mode_var.get() != self.original_values['analysis_mode'] or
             self.api_key_var.get() != self.original_values['api_key'] or
@@ -1400,6 +1632,14 @@ class ComprehensiveSettingsDialog:
             self.config['detection_iou_threshold'] = self.iou_threshold_var.get()
             self.config['train_epochs'] = self.train_epochs_var.get()
             self.config['batch_size'] = self.train_batch_size_var.get()
+            self.config['training_device'] = self.train_device_var.get()
+
+            # Save YOLO model configuration
+            self.config['yolo_version'] = self.yolo_version_var.get()
+            self.config['yolo_model_size'] = self.yolo_size_var.get()
+            # Construct and save the architecture from version + size
+            self.config['model_architecture'] = self._get_model_architecture()
+
             self.config['debug_mode'] = self.debug_mode_var.get()
             self.config['analysis_mode'] = self.analysis_mode_var.get()
             self.config['gemini_api_key'] = self.api_key_var.get()
@@ -1845,3 +2085,33 @@ class ComprehensiveSettingsDialog:
         self.test_result_var.set(f"Connection failed: {error_msg}")
         self.test_result_label.config(fg=self.COLORS['error'])
         self.api_test_button.config(state='normal')
+
+    def _detect_training_device(self):
+        """Detect available training device and display it."""
+        try:
+            # Import device detection function from training service
+            from app.services.training_service import get_best_device, get_device_memory_info
+
+            device_str, device_name = get_best_device()
+
+            # Get memory info if available
+            memory_info = get_device_memory_info(device_str)
+
+            if memory_info:
+                info_text = f"Detected: {device_name} ({memory_info['free_mb']:.0f}MB free)"
+            else:
+                info_text = f"Detected: {device_name}"
+
+            self.detected_device_label.config(
+                text=info_text,
+                fg=self.COLORS['success'] if device_str != 'cpu' else self.COLORS['text_muted']
+            )
+
+            logger.info(f"Detected training device: {device_name} ({device_str})")
+
+        except Exception as e:
+            logger.error(f"Error detecting training device: {e}")
+            self.detected_device_label.config(
+                text=f"Error: {str(e)}",
+                fg=self.COLORS['error']
+            )

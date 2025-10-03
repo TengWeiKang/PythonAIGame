@@ -11,6 +11,72 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def get_best_device() -> tuple[str, str]:
+    """Detect the best available device for YOLO training.
+
+    Returns:
+        Tuple of (device_string, device_name):
+        - device_string: 'cuda', 'mps', or 'cpu' for PyTorch/YOLO
+        - device_name: Human-readable device name
+    """
+    try:
+        import torch
+
+        # Check for NVIDIA CUDA GPU
+        if torch.cuda.is_available():
+            try:
+                device_name = torch.cuda.get_device_name(0)
+                return 'cuda', device_name
+            except Exception as e:
+                logger.warning(f"CUDA available but failed to get device name: {e}")
+                return 'cuda', 'CUDA GPU'
+
+        # Check for Apple Metal Performance Shaders (MPS)
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return 'mps', 'Apple Metal (MPS)'
+
+        # Fallback to CPU
+        return 'cpu', 'CPU'
+
+    except ImportError:
+        logger.warning("PyTorch not available for device detection, defaulting to CPU")
+        return 'cpu', 'CPU'
+    except Exception as e:
+        logger.error(f"Error detecting device: {e}")
+        return 'cpu', 'CPU'
+
+
+def get_device_memory_info(device: str) -> Optional[Dict[str, Any]]:
+    """Get memory information for the specified device.
+
+    Args:
+        device: Device string ('cuda', 'mps', or 'cpu')
+
+    Returns:
+        Dictionary with memory info or None if unavailable
+    """
+    try:
+        import torch
+
+        if device == 'cuda' and torch.cuda.is_available():
+            total_memory = torch.cuda.get_device_properties(0).total_memory
+            allocated = torch.cuda.memory_allocated(0)
+            reserved = torch.cuda.memory_reserved(0)
+
+            return {
+                'total_mb': total_memory / (1024 ** 2),
+                'allocated_mb': allocated / (1024 ** 2),
+                'reserved_mb': reserved / (1024 ** 2),
+                'free_mb': (total_memory - reserved) / (1024 ** 2)
+            }
+
+        return None
+
+    except Exception as e:
+        logger.warning(f"Could not get memory info for {device}: {e}")
+        return None
+
+
 class TrainingObject:
     """Represents a training object with image and metadata."""
 
@@ -270,27 +336,85 @@ class TrainingService:
             logger.error(f"Error in YOLO export: {e}")
             return False
 
-    def train_model(self, base_model: str = "yolo12n.pt", epochs: int = 10,
-                   batch_size: int = 8, img_size: int = 640,
+    def train_model(self, epochs: int = 100, batch_size: int = 8, img_size: int = 640,
                    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-                   cancellation_check: Optional[Callable[[], bool]] = None) -> bool:
-        """Train YOLO model with all objects.
+                   cancellation_check: Optional[Callable[[], bool]] = None,
+                   device: Optional[str] = None,
+                   model_architecture: str = "yolo11n.yaml") -> bool:
+        """Train YOLO model from scratch with all objects.
+
+        This method trains a completely custom YOLO model with random initialization
+        (no pretrained weights). The model learns only from your custom dataset,
+        making it fully specialized for your specific objects.
 
         Args:
-            base_model: Base YOLO model to fine-tune
-            epochs: Number of training epochs
+            epochs: Number of training epochs (default 100 for training from scratch).
+                   Training from scratch typically requires more epochs than fine-tuning.
             batch_size: Training batch size
             img_size: Image size for training
             progress_callback: Optional callback for progress updates (receives dict with metrics)
             cancellation_check: Optional callback that returns True if training should be cancelled
+            device: Device to use for training ('auto', 'cuda', 'mps', 'cpu').
+                   If None or 'auto', automatically detects best available device.
+            model_architecture: YOLO architecture YAML file (default 'yolo11n.yaml').
+                              Available architectures: yolo11n.yaml (nano), yolo11s.yaml (small),
+                              yolo11m.yaml (medium), yolo11l.yaml (large), yolo11x.yaml (extra large).
+                              The YAML file defines the network structure without pretrained weights.
 
         Returns:
             True if training completed successfully, False otherwise (includes cancellation)
+
+        Note:
+            Training from scratch (random weights) typically requires:
+            - More training epochs (100+ recommended vs 10-50 for fine-tuning)
+            - More training data for good results
+            - Longer training time
+            - The model will be completely custom to your dataset
         """
         try:
             from ultralytics import YOLO
             import shutil
             import time
+
+            # Determine device to use
+            if device is None or device == 'auto' or device == '':
+                training_device, device_name = get_best_device()
+                logger.info(f"Auto-detected training device: {device_name} ({training_device})")
+            else:
+                # Use user-specified device
+                training_device = device.lower()
+                device_name = device
+
+                # Validate device availability
+                if training_device == 'cuda':
+                    try:
+                        import torch
+                        if not torch.cuda.is_available():
+                            logger.warning("CUDA requested but not available, falling back to CPU")
+                            training_device = 'cpu'
+                            device_name = 'CPU (fallback)'
+                    except ImportError:
+                        logger.warning("PyTorch not available, falling back to CPU")
+                        training_device = 'cpu'
+                        device_name = 'CPU (fallback)'
+                elif training_device == 'mps':
+                    try:
+                        import torch
+                        if not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
+                            logger.warning("MPS requested but not available, falling back to CPU")
+                            training_device = 'cpu'
+                            device_name = 'CPU (fallback)'
+                    except ImportError:
+                        logger.warning("PyTorch not available, falling back to CPU")
+                        training_device = 'cpu'
+                        device_name = 'CPU (fallback)'
+
+                logger.info(f"Using user-specified training device: {device_name} ({training_device})")
+
+            # Get memory info if GPU
+            memory_info = get_device_memory_info(training_device)
+            if memory_info:
+                logger.info(f"GPU Memory: {memory_info['free_mb']:.0f}MB free / {memory_info['total_mb']:.0f}MB total")
 
             # Export dataset first (uses all objects)
             dataset_dir = self.data_dir / "exported_dataset"
@@ -303,9 +427,24 @@ class TrainingService:
                 logger.info("Training cancelled before starting")
                 return False
 
-            # Load base model
-            logger.info(f"Loading base model: {base_model}")
-            model = YOLO(base_model)
+            # Initialize model from architecture (training from scratch with random weights)
+            logger.info(f"Initializing model architecture from scratch: {model_architecture}")
+            logger.info("NOTE: Training from scratch with random initialization (no pretrained weights)")
+            logger.info(f"This will take longer than fine-tuning but creates a fully custom model for your dataset")
+
+            try:
+                model = YOLO(model_architecture)
+                logger.info(f"Model architecture loaded successfully: {model_architecture}")
+            except Exception as e:
+                logger.error(f"Failed to load model architecture '{model_architecture}': {e}")
+                logger.info("Available architectures: yolo11n.yaml, yolo11s.yaml, yolo11m.yaml, yolo11l.yaml, yolo11x.yaml")
+                logger.info("Falling back to yolo11n.yaml (nano architecture)")
+                try:
+                    model = YOLO('yolo11n.yaml')
+                    logger.info("Fallback successful: using yolo11n.yaml")
+                except Exception as e2:
+                    logger.error(f"Fallback failed: {e2}")
+                    return False
 
             # Prepare training arguments
             data_yaml = dataset_dir / "data.yaml"
@@ -377,25 +516,61 @@ class TrainingService:
             model.add_callback('on_train_epoch_end', on_train_epoch_end)
 
             # Start training
-            logger.info("Starting model training...")
+            logger.info(f"Starting model training FROM SCRATCH on {device_name}...")
+            logger.info(f"Training with {epochs} epochs on custom dataset")
+            logger.info(f"Model will be initialized with random weights (no pretrained base)")
 
-            # Notify start of training
+            # Notify start of training with device info
             if progress_callback:
                 progress_callback({
                     'status': 'training_started',
                     'epoch': 0,
-                    'total_epochs': epochs
+                    'total_epochs': epochs,
+                    'device': device_name,
+                    'device_type': training_device,
+                    'training_mode': 'from_scratch'
                 })
 
-            results = model.train(
-                data=str(data_yaml),
-                epochs=epochs,
-                batch=batch_size,
-                imgsz=img_size,
-                verbose=True,
-                project='runs/detect',
-                name='train'
-            )
+            # Train with device specification
+            try:
+                results = model.train(
+                    data=str(data_yaml),
+                    epochs=epochs,
+                    batch=batch_size,
+                    imgsz=img_size,
+                    device=training_device,  # Specify device for training
+                    verbose=True,
+                    project='runs/detect',
+                    name='train'
+                )
+            except RuntimeError as e:
+                # Handle GPU out-of-memory or other runtime errors
+                if 'out of memory' in str(e).lower() or 'cuda' in str(e).lower():
+                    logger.error(f"GPU training failed: {e}")
+                    logger.info("Retrying training on CPU...")
+
+                    # Retry on CPU
+                    training_device = 'cpu'
+                    device_name = 'CPU (fallback after GPU error)'
+
+                    if progress_callback:
+                        progress_callback({
+                            'status': 'retrying_on_cpu',
+                            'message': 'GPU training failed, retrying on CPU...'
+                        })
+
+                    results = model.train(
+                        data=str(data_yaml),
+                        epochs=epochs,
+                        batch=batch_size,
+                        imgsz=img_size,
+                        device='cpu',
+                        verbose=True,
+                        project='runs/detect',
+                        name='train'
+                    )
+                else:
+                    raise
 
             # Check if training was cancelled
             if cancellation_check and cancellation_check():
