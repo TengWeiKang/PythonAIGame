@@ -157,14 +157,14 @@ class ComprehensiveSettingsDialog:
         """Parse architecture string to extract version and size.
 
         Args:
-            architecture: Architecture string like 'yolo11n.yaml' or 'yolov8s.yaml'
+            architecture: Architecture string like 'yolo11n.pt', 'yolo11n.yaml', 'yolov8s.pt', etc.
 
         Returns:
             Tuple of (version_var, size_var) StringVars
         """
         try:
-            # Remove .yaml extension
-            arch_name = architecture.replace('.yaml', '')
+            # Remove .pt or .yaml extension
+            arch_name = architecture.replace('.pt', '').replace('.yaml', '')
 
             # Parse version and size
             # Formats: yolo11n, yolov8s, yolo12m, etc.
@@ -199,23 +199,23 @@ class ComprehensiveSettingsDialog:
         """Construct model architecture filename from version and size.
 
         Returns:
-            Architecture filename like 'yolo11n.yaml'
+            Architecture filename like 'yolo11n.pt' (pretrained model for transfer learning)
         """
         try:
             version = self.yolo_version_var.get().replace('v', '')  # v11 -> 11
             size = self.yolo_size_var.get()  # Just the letter (n, s, m, l, x)
 
-            # Construct architecture: yolo + version + size + .yaml
+            # Construct architecture: yolo + version + size + .pt (default to transfer learning)
             if version == '8':
                 # YOLOv8 uses 'yolov8' prefix
-                return f"yolov8{size}.yaml"
+                return f"yolov8{size}.pt"
             else:
                 # YOLOv11, v12, etc. use 'yolo' prefix
-                return f"yolo{version}{size}.yaml"
+                return f"yolo{version}{size}.pt"
 
         except Exception as e:
             logger.warning(f"Failed to construct architecture: {e}")
-            return "yolo11n.yaml"  # Fallback
+            return "yolo11n.pt"  # Fallback to pretrained model
 
     def _on_yolo_setting_changed(self, *args):
         """Called when YOLO version or size changes - update architecture display."""
@@ -256,7 +256,7 @@ class ComprehensiveSettingsDialog:
 
         # Training settings
         self.train_epochs_var = tk.IntVar(
-            value=self.config.get('train_epochs', 100)
+            value=self.config.get('train_epochs', 50)
         )
         self.train_batch_size_var = tk.IntVar(
             value=self.config.get('batch_size', 16)
@@ -267,12 +267,12 @@ class ComprehensiveSettingsDialog:
 
         # YOLO Model Selection - New granular controls
         # Extract version and size from existing architecture, or use defaults
-        existing_arch = self.config.get('model_architecture', 'yolo11n.yaml')
+        existing_arch = self.config.get('model_architecture', 'yolo11n.pt')
         self.yolo_version_var, self.yolo_size_var = self._parse_architecture(existing_arch)
 
         # Keep model_architecture_var for backward compatibility
         self.model_architecture_var = tk.StringVar(
-            value=self.config.get('model_architecture', 'yolo11n.yaml')
+            value=self.config.get('model_architecture', 'yolo11n.pt')
         )
 
         # Debug settings
@@ -869,7 +869,7 @@ class ComprehensiveSettingsDialog:
         # Description for epochs
         epochs_desc = tk.Label(
             training_content,
-            text="Number of complete passes through the training dataset. Training from scratch (no pretrained weights) requires MORE epochs than fine-tuning. Recommended: 100-200 for training from scratch.",
+            text="Number of complete passes through the training dataset. Transfer learning (using .pt files) typically needs 30-50 epochs. Training from scratch (using .yaml files) requires 100-200 epochs. Recommended: 50 for transfer learning, 150 for training from scratch.",
             bg=self.COLORS['bg_secondary'],
             fg=self.COLORS['text_muted'],
             font=('Segoe UI', 8),
@@ -975,10 +975,10 @@ class ComprehensiveSettingsDialog:
                 relief='sunken',
                 padx=10, pady=3).pack(side='left', padx=(5, 0))
 
-        # Important note about training from scratch
+        # Important note about training modes
         scratch_note = tk.Label(
             training_content,
-            text="NOTE: Training from scratch (random weights, no pretrained base) requires 100+ epochs for good results.\nThe model will be completely specialized for your custom dataset.",
+            text="TRANSFER LEARNING (.pt files): Uses pretrained weights, needs 30-50 epochs, works with 5-10 images per class.\nFROM SCRATCH (.yaml files): Random weights, needs 100+ epochs and more data, but fully custom to your dataset.",
             bg=self.COLORS['bg_secondary'],
             fg=self.COLORS['warning'],
             font=('Segoe UI', 8, 'italic'),

@@ -101,6 +101,9 @@ class ImageAugmentor:
         'salt_pepper_noise', 'sharpness'
     }
 
+    # Spatial augmentation methods that change object position/size and require bbox recalculation
+    SPATIAL_AUGMENTATIONS = {'rotation', 'scaling', 'translation'}
+
     @staticmethod
     def augment_horizontal_flip(image: np.ndarray) -> np.ndarray:
         """Apply horizontal flip (mirror image).
@@ -126,15 +129,18 @@ class ImageAugmentor:
         return cv2.flip(image, 0)
 
     @staticmethod
-    def augment_rotation(image: np.ndarray, angle: Optional[float] = None) -> np.ndarray:
+    def augment_rotation(image: np.ndarray, angle: Optional[float] = None,
+                        return_bbox: bool = False) -> tuple[np.ndarray, Optional[tuple]]:
         """Apply rotation with random or specified angle.
 
         Args:
             image: Input image
             angle: Rotation angle in degrees (if None, randomly chosen from -30 to +30)
+            return_bbox: If True, returns (rotated_image, bbox), else returns rotated_image
 
         Returns:
-            Rotated image
+            If return_bbox=False: Rotated image
+            If return_bbox=True: Tuple of (rotated_image, bbox) where bbox is (cx, cy, w, h) normalized
         """
         if angle is None:
             angle = random.uniform(-30, 30)
@@ -153,20 +159,34 @@ class ImageAugmentor:
         matrix[0, 2] += (new_w / 2) - center[0]
         matrix[1, 2] += (new_h / 2) - center[1]
 
-        return cv2.warpAffine(image, matrix, (new_w, new_h),
-                             borderMode=cv2.BORDER_CONSTANT,
-                             borderValue=(0, 0, 0))
+        rotated = cv2.warpAffine(image, matrix, (new_w, new_h),
+                                borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=(0, 0, 0))
+
+        if return_bbox:
+            # Calculate bbox for rotated image
+            # Original object filled the frame (w x h), now canvas expanded to (new_w x new_h)
+            # Object is still centered but smaller relative to new canvas
+            bbox_width = w / new_w
+            bbox_height = h / new_h
+            bbox = (0.5, 0.5, bbox_width, bbox_height)  # Still centered
+            return rotated, bbox
+        else:
+            return rotated
 
     @staticmethod
-    def augment_scaling(image: np.ndarray, scale_factor: Optional[float] = None) -> np.ndarray:
+    def augment_scaling(image: np.ndarray, scale_factor: Optional[float] = None,
+                       return_bbox: bool = False) -> tuple[np.ndarray, Optional[tuple]]:
         """Apply scaling (zoom in/out).
 
         Args:
             image: Input image
             scale_factor: Scale factor (if None, randomly chosen from 0.8 to 1.2)
+            return_bbox: If True, returns (scaled_image, bbox), else returns scaled_image
 
         Returns:
-            Scaled image
+            If return_bbox=False: Scaled image
+            If return_bbox=True: Tuple of (scaled_image, bbox) where bbox is (cx, cy, w, h) normalized
         """
         if scale_factor is None:
             scale_factor = random.uniform(0.8, 1.2)
@@ -177,34 +197,46 @@ class ImageAugmentor:
         # Resize image
         scaled = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-        # If scaled down, pad to original size
+        # Calculate bbox based on scaling operation
         if scale_factor < 1.0:
+            # Scaled down and padded - object is smaller
             top = (h - new_h) // 2
             bottom = h - new_h - top
             left = (w - new_w) // 2
             right = w - new_w - left
             scaled = cv2.copyMakeBorder(scaled, top, bottom, left, right,
                                        cv2.BORDER_CONSTANT, value=(0, 0, 0))
-        # If scaled up, crop to original size
+            # Object occupies only the center portion
+            bbox_width = scale_factor
+            bbox_height = scale_factor
+            bbox = (0.5, 0.5, bbox_width, bbox_height)
         else:
+            # Scaled up and cropped - object fills frame but some parts are outside
             top = (new_h - h) // 2
             left = (new_w - w) // 2
             scaled = scaled[top:top+h, left:left+w]
+            # Object still fills the frame after crop
+            bbox = (0.5, 0.5, 1.0, 1.0)
 
-        return scaled
+        if return_bbox:
+            return scaled, bbox
+        else:
+            return scaled
 
     @staticmethod
     def augment_translation(image: np.ndarray, tx: Optional[int] = None,
-                           ty: Optional[int] = None) -> np.ndarray:
+                           ty: Optional[int] = None, return_bbox: bool = False) -> tuple[np.ndarray, Optional[tuple]]:
         """Apply translation (shift).
 
         Args:
             image: Input image
             tx: Translation in x direction (if None, random within ±10% of width)
             ty: Translation in y direction (if None, random within ±10% of height)
+            return_bbox: If True, returns (translated_image, bbox), else returns translated_image
 
         Returns:
-            Translated image
+            If return_bbox=False: Translated image
+            If return_bbox=True: Tuple of (translated_image, bbox) where bbox is (cx, cy, w, h) normalized
         """
         h, w = image.shape[:2]
 
@@ -214,9 +246,38 @@ class ImageAugmentor:
             ty = int(random.uniform(-0.1, 0.1) * h)
 
         matrix = np.float32([[1, 0, tx], [0, 1, ty]])
-        return cv2.warpAffine(image, matrix, (w, h),
-                             borderMode=cv2.BORDER_CONSTANT,
-                             borderValue=(0, 0, 0))
+        translated = cv2.warpAffine(image, matrix, (w, h),
+                                   borderMode=cv2.BORDER_CONSTANT,
+                                   borderValue=(0, 0, 0))
+
+        if return_bbox:
+            # Calculate bbox after translation with proper clipping
+            # When image is translated, parts move outside frame and get cut off
+
+            # Normalized translation offsets
+            tx_norm = tx / w
+            ty_norm = ty / h
+
+            # Calculate visible region after translation and clipping
+            # Original object spans [0, 1] in both dimensions
+            # After translation, it spans [tx_norm, 1+tx_norm] and [ty_norm, 1+ty_norm]
+            # But the visible frame is [0, 1] x [0, 1], so we need to clip
+
+            left = max(0.0, tx_norm)
+            right = min(1.0, 1.0 + tx_norm)
+            top = max(0.0, ty_norm)
+            bottom = min(1.0, 1.0 + ty_norm)
+
+            # Calculate final bbox (center and size of visible portion)
+            bbox_width = right - left
+            bbox_height = bottom - top
+            bbox_cx = (left + right) / 2.0
+            bbox_cy = (top + bottom) / 2.0
+
+            bbox = (bbox_cx, bbox_cy, bbox_width, bbox_height)
+            return translated, bbox
+        else:
+            return translated
 
     @staticmethod
     def augment_brightness(image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
@@ -676,7 +737,7 @@ class TrainingService:
             return False
 
     def _apply_augmentations(self, image: np.ndarray, augmentation_types: List[str],
-                            augmentation_factor: int) -> List[tuple[np.ndarray, str]]:
+                            augmentation_factor: int) -> List[tuple[np.ndarray, str, Optional[tuple]]]:
         """Apply augmentations to an image with intelligent deterministic vs stochastic handling.
 
         This implements a hybrid augmentation approach:
@@ -689,6 +750,9 @@ class TrainingService:
           Applied augmentation_factor times, with each application using different
           random parameters to create diverse variations.
 
+        - SPATIAL methods (rotation, scaling, translation):
+          These change the object's position/size, so proper bbox calculation is performed.
+
         Args:
             image: Input image
             augmentation_types: List of augmentation type names to apply
@@ -697,9 +761,11 @@ class TrainingService:
                                 Example: factor=3 means stochastic methods applied 3 times
 
         Returns:
-            List of tuples (augmented_image, augmentation_identifier)
-            where augmentation_identifier is formatted as "method_name_N" (e.g., "rotation_1")
-            or "method_name" for deterministic methods
+            List of tuples (augmented_image, augmentation_identifier, bbox)
+            where:
+            - augmentation_identifier is formatted as "method_name_N" (e.g., "rotation_1")
+              or "method_name" for deterministic methods
+            - bbox is (cx, cy, w, h) in normalized coordinates, or None if unchanged
         """
         augmented_images = []
 
@@ -707,6 +773,9 @@ class TrainingService:
         for aug_type in augmentation_types:
             aug_func = ImageAugmentor.get_augmentation_function(aug_type)
             if aug_func:
+                # Check if this is a spatial augmentation that needs bbox calculation
+                is_spatial = aug_type in ImageAugmentor.SPATIAL_AUGMENTATIONS
+
                 # Determine iteration count based on method type
                 if aug_type in ImageAugmentor.DETERMINISTIC_METHODS:
                     # Deterministic: apply exactly once
@@ -727,7 +796,19 @@ class TrainingService:
                     try:
                         # Apply augmentation to original image
                         # Stochastic methods generate new random parameters each time
-                        aug_image = aug_func(image.copy())
+                        if is_spatial:
+                            # Spatial augmentations support bbox calculation
+                            result = aug_func(image.copy(), return_bbox=True)
+                            if isinstance(result, tuple) and len(result) == 2:
+                                aug_image, bbox = result
+                            else:
+                                # Fallback if bbox not returned
+                                aug_image = result
+                                bbox = None
+                        else:
+                            # Non-spatial augmentations don't change bbox
+                            aug_image = aug_func(image.copy())
+                            bbox = None
 
                         # Create unique identifier
                         if iterations == 1:
@@ -737,7 +818,7 @@ class TrainingService:
                             # Stochastic: include iteration number
                             aug_identifier = f"{aug_type}_{i+1}"
 
-                        augmented_images.append((aug_image, aug_identifier))
+                        augmented_images.append((aug_image, aug_identifier, bbox))
                     except Exception as e:
                         logger.warning(f"Failed to apply augmentation '{aug_type}' "
                                      f"(iteration {i+1}/{iterations}, {iteration_note}): {e}")
@@ -808,6 +889,13 @@ class TrainingService:
                     logger.info(f"  • Deterministic (1× each): {', '.join(deterministic_methods)}")
                 if stochastic_methods:
                     logger.info(f"  • Stochastic ({augmentation_factor}× each): {', '.join(stochastic_methods)}")
+
+                # Check for spatial augmentations with bbox tracking
+                spatial_methods = [m for m in augmentation_types if m in ImageAugmentor.SPATIAL_AUGMENTATIONS]
+                if spatial_methods:
+                    logger.info(f"  • Spatial augmentations with bbox tracking: {', '.join(spatial_methods)}")
+                    logger.info(f"    (These augmentations change object position/size, bbox will be calculated)")
+
                 logger.info(f"Total images to export: {total_images} = {len(objects)} original + "
                           f"{total_augmented} augmented ({len(deterministic_methods)}×1 + {len(stochastic_methods)}×{augmentation_factor} per image)")
 
@@ -832,14 +920,14 @@ class TrainingService:
 
                 # Apply augmentations if enabled
                 if enable_augmentation and augmentation_types:
-                    # Get augmented images with their identifiers
+                    # Get augmented images with their identifiers and bboxes
                     # Each method is applied augmentation_factor times
                     augmented_images = self._apply_augmentations(
                         obj.image, augmentation_types, augmentation_factor
                     )
 
                     # Save each augmented image with descriptive filename
-                    for aug_image, aug_identifier in augmented_images:
+                    for aug_image, aug_identifier, bbox in augmented_images:
                         # Create filename with augmentation identifier
                         # Example: 0001_rotation_1.jpg, 0001_rotation_2.jpg, 0001_brightness_1.jpg, etc.
                         aug_img_name = f"{img_counter:04d}_{aug_identifier}.jpg"
@@ -849,9 +937,23 @@ class TrainingService:
                         # Create label file for augmented image
                         aug_h, aug_w = aug_image.shape[:2]
                         aug_label_path = labels_dir / f"{img_counter:04d}_{aug_identifier}.txt"
+
+                        # Use calculated bbox if available, otherwise use default full-image bbox
+                        if bbox is not None:
+                            # Spatial augmentation with calculated bbox
+                            cx, cy, bw, bh = bbox
+                            # Ensure bbox values are within valid range [0, 1]
+                            cx = max(0.0, min(1.0, cx))
+                            cy = max(0.0, min(1.0, cy))
+                            bw = max(0.0, min(1.0, bw))
+                            bh = max(0.0, min(1.0, bh))
+                        else:
+                            # Non-spatial augmentation or no bbox returned - object still fills frame
+                            cx, cy, bw, bh = 0.5, 0.5, 1.0, 1.0
+
                         with open(aug_label_path, 'w') as f:
-                            # Full image bbox in normalized YOLO format
-                            f.write(f"{class_idx} 0.5 0.5 1.0 1.0\n")
+                            # YOLO format: class_idx center_x center_y width height (normalized)
+                            f.write(f"{class_idx} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
 
                         img_counter += 1
 
@@ -864,7 +966,7 @@ class TrainingService:
             yaml_content = {
                 'path': str(export_dir.absolute()),
                 'train': 'images/train',
-                'val': 'labels/train',  # Use same for validation
+                'val': 'images/train',  # FIX: Changed from 'labels/train' to 'images/train' for validation
                 'names': {idx: label for label, idx in class_map.items()}
             }
 
@@ -893,45 +995,75 @@ class TrainingService:
             logger.error(f"Error in YOLO export: {e}")
             return False
 
-    def train_model(self, epochs: int = 100, batch_size: int = 8, img_size: int = 640,
+    def train_model(self, epochs: int = 50, batch_size: int = 8, img_size: int = 640,
                    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
                    cancellation_check: Optional[Callable[[], bool]] = None,
                    device: Optional[str] = None,
-                   model_architecture: str = "yolo11n.yaml") -> bool:
-        """Train YOLO model from scratch with all objects.
+                   model_architecture: str = "yolo11n.pt") -> bool:
+        """Train YOLO model with transfer learning using pretrained weights.
 
-        This method trains a completely custom YOLO model with random initialization
-        (no pretrained weights). The model learns only from your custom dataset,
-        making it fully specialized for your specific objects.
+        This method uses transfer learning by starting with pretrained YOLO weights
+        and fine-tuning them on your custom dataset. This approach requires much less
+        data and training time compared to training from scratch.
 
         Args:
-            epochs: Number of training epochs (default 100 for training from scratch).
-                   Training from scratch typically requires more epochs than fine-tuning.
+            epochs: Number of training epochs (default 50 for transfer learning).
+                   Transfer learning typically needs 30-50 epochs vs 100+ for training from scratch.
             batch_size: Training batch size
             img_size: Image size for training
             progress_callback: Optional callback for progress updates (receives dict with metrics)
             cancellation_check: Optional callback that returns True if training should be cancelled
             device: Device to use for training ('auto', 'cuda', 'mps', 'cpu').
                    If None or 'auto', automatically detects best available device.
-            model_architecture: YOLO architecture YAML file (default 'yolo11n.yaml').
-                              Available architectures: yolo11n.yaml (nano), yolo11s.yaml (small),
-                              yolo11m.yaml (medium), yolo11l.yaml (large), yolo11x.yaml (extra large).
-                              The YAML file defines the network structure without pretrained weights.
+            model_architecture: YOLO pretrained model file (default 'yolo11n.pt').
+                              Available models: yolo11n.pt (nano), yolo11s.pt (small),
+                              yolo11m.pt (medium), yolo11l.pt (large), yolo11x.pt (extra large).
+                              The .pt file contains pretrained weights for transfer learning.
+                              Use .yaml files only for training from scratch (requires 100+ epochs).
 
         Returns:
             True if training completed successfully, False otherwise (includes cancellation)
 
         Note:
-            Training from scratch (random weights) typically requires:
-            - More training epochs (100+ recommended vs 10-50 for fine-tuning)
-            - More training data for good results
-            - Longer training time
-            - The model will be completely custom to your dataset
+            Transfer learning advantages:
+            - Much less training data required (can work with 5-10 images per class)
+            - Faster training time (30-50 epochs typical)
+            - Better results with limited data
+            - Leverages knowledge from pretrained models
         """
         try:
             from ultralytics import YOLO
             import shutil
             import time
+            import gc
+
+            # Force garbage collection to free memory before training
+            gc.collect()
+            logger.info("Memory cleanup: Garbage collection completed")
+
+            # Optional: Check available memory if psutil is available
+            try:
+                import psutil
+                memory = psutil.virtual_memory()
+                available_gb = memory.available / (1024**3)
+                used_percent = memory.percent
+
+                logger.info(f"System memory status: {available_gb:.2f} GB available ({100-used_percent:.1f}% free)")
+
+                if available_gb < 2.0:
+                    logger.warning(f"LOW MEMORY WARNING: Only {available_gb:.2f} GB available")
+                    logger.warning("Training may be slow or fail. Consider closing other applications.")
+
+                    if progress_callback:
+                        progress_callback({
+                            'status': 'warning',
+                            'message': f'Low memory: {available_gb:.2f} GB available. Training may be slower.'
+                        })
+                elif available_gb < 4.0:
+                    logger.info(f"Memory notice: {available_gb:.2f} GB available - using memory-safe settings")
+            except ImportError:
+                # psutil not available - that's fine, continue without memory check
+                logger.debug("psutil not available - skipping memory check")
 
             # Determine device to use
             if device is None or device == 'auto' or device == '':
@@ -984,35 +1116,88 @@ class TrainingService:
                 logger.info("Training cancelled before starting")
                 return False
 
-            # Initialize model from architecture (training from scratch with random weights)
-            logger.info(f"Initializing model architecture from scratch: {model_architecture}")
-            logger.info("NOTE: Training from scratch with random initialization (no pretrained weights)")
-            logger.info(f"This will take longer than fine-tuning but creates a fully custom model for your dataset")
+            # Determine training mode based on model file extension
+            is_pretrained = model_architecture.endswith('.pt')
+            is_from_scratch = model_architecture.endswith('.yaml')
+
+            if is_pretrained:
+                logger.info(f"Initializing model with transfer learning: {model_architecture}")
+                logger.info("Using pretrained weights for better performance with limited data")
+                logger.info(f"Transfer learning approach: fine-tuning existing knowledge on your custom dataset")
+            elif is_from_scratch:
+                logger.info(f"Initializing model for training from scratch: {model_architecture}")
+                logger.info("NOTE: Training from scratch with random initialization (no pretrained weights)")
+                logger.info(f"This requires more data and epochs but creates a fully custom model")
+            else:
+                logger.warning(f"Unknown model file type: {model_architecture}")
+                logger.info("Expected .pt (pretrained) or .yaml (from scratch)")
 
             try:
                 model = YOLO(model_architecture)
-                logger.info(f"Model architecture loaded successfully: {model_architecture}")
+                logger.info(f"Model loaded successfully: {model_architecture}")
             except Exception as e:
-                logger.error(f"Failed to load model architecture '{model_architecture}': {e}")
-                logger.info("Available architectures: yolo11n.yaml, yolo11s.yaml, yolo11m.yaml, yolo11l.yaml, yolo11x.yaml")
-                logger.info("Falling back to yolo11n.yaml (nano architecture)")
-                try:
-                    model = YOLO('yolo11n.yaml')
-                    logger.info("Fallback successful: using yolo11n.yaml")
-                except Exception as e2:
-                    logger.error(f"Fallback failed: {e2}")
-                    return False
+                logger.error(f"Failed to load model '{model_architecture}': {e}")
+
+                # Smart fallback based on original intention
+                if is_pretrained or not is_from_scratch:
+                    # Try pretrained fallback first
+                    logger.info("Available pretrained models: yolo11n.pt, yolo11s.pt, yolo11m.pt, yolo11l.pt, yolo11x.pt")
+                    logger.info("Falling back to yolo11n.pt (nano pretrained model with transfer learning)")
+                    try:
+                        model = YOLO('yolo11n.pt')
+                        logger.info("Fallback successful: using yolo11n.pt with transfer learning")
+                    except Exception as e2:
+                        logger.error(f"Pretrained fallback failed: {e2}")
+                        return False
+                else:
+                    # Fallback to from-scratch for .yaml files
+                    logger.info("Available architectures: yolo11n.yaml, yolo11s.yaml, yolo11m.yaml, yolo11l.yaml, yolo11x.yaml")
+                    logger.info("Falling back to yolo11n.yaml (nano architecture, training from scratch)")
+                    try:
+                        model = YOLO('yolo11n.yaml')
+                        logger.info("Fallback successful: using yolo11n.yaml")
+                    except Exception as e2:
+                        logger.error(f"Fallback failed: {e2}")
+                        return False
 
             # Prepare training arguments
             data_yaml = dataset_dir / "data.yaml"
 
-            # Track training start time for ETA calculation
-            training_start_time = time.time()
-            epoch_times = []
+            # Track epoch timing for accurate ETA calculation
+            # Key variables for proper per-epoch time tracking
+            epoch_start_time = time.time()  # Start time of current epoch
+            epoch_durations = []  # List of individual epoch durations (not cumulative)
+            training_overall_start = time.time()  # Overall training start (for total elapsed)
+
+            # Helper function to format ETA in human-readable format
+            def format_eta(seconds: int) -> str:
+                """Format seconds as human-readable time string.
+
+                Args:
+                    seconds: Number of seconds
+
+                Returns:
+                    Formatted string like "2h 15m 30s" or "5m 30s" or "45s"
+                """
+                if seconds < 0:
+                    return "Almost done"
+
+                hours = seconds // 3600
+                minutes = (seconds % 3600) // 60
+                secs = seconds % 60
+
+                if hours > 0:
+                    return f"{hours}h {minutes}m {secs}s"
+                elif minutes > 0:
+                    return f"{minutes}m {secs}s"
+                else:
+                    return f"{secs}s"
 
             # Define callback for training progress updates
             def on_train_epoch_end(trainer):
-                """Called at the end of each training epoch."""
+                """Called at the end of each training epoch with accurate ETA calculation."""
+                nonlocal epoch_start_time  # Need to update this for next epoch
+
                 try:
                     # Check for cancellation
                     if cancellation_check and cancellation_check():
@@ -1024,22 +1209,78 @@ class TrainingService:
                     current_epoch = trainer.epoch + 1  # YOLO uses 0-based indexing
                     total_epochs = trainer.epochs
 
-                    # Calculate ETA
-                    epoch_time = time.time() - training_start_time
-                    epoch_times.append(epoch_time)
+                    # Calculate this epoch's duration (not cumulative time!)
+                    epoch_end_time = time.time()
+                    epoch_duration = epoch_end_time - epoch_start_time
+                    epoch_durations.append(epoch_duration)
 
-                    if len(epoch_times) > 1:
-                        avg_epoch_time = sum(epoch_times) / len(epoch_times)
+                    # Calculate progress percentage
+                    progress_percent = round((current_epoch / total_epochs) * 100, 1)
+
+                    # Calculate ETA with intelligent moving average
+                    # Strategy: Use moving window average, excluding first epochs if they're outliers
+                    min_epochs_for_avg = 2  # Minimum epochs before we start averaging
+
+                    if len(epoch_durations) == 0:
+                        # No epochs completed yet (shouldn't happen in this callback)
+                        avg_epoch_time = 0
+                        eta_seconds = 0
+                        eta_formatted = "Calculating..."
+                    elif len(epoch_durations) == 1:
+                        # First epoch just completed - use it as rough estimate
+                        avg_epoch_time = epoch_duration
                         remaining_epochs = total_epochs - current_epoch
                         eta_seconds = int(avg_epoch_time * remaining_epochs)
+                        eta_formatted = format_eta(eta_seconds) + " (initial estimate)"
                     else:
-                        eta_seconds = 0
+                        # Multiple epochs completed - use moving average
+                        # Exclude first epoch if we have enough data (first epoch often has initialization overhead)
+                        if len(epoch_durations) > min_epochs_for_avg:
+                            # Use moving window of last 5 epochs (or all except first if fewer)
+                            window_size = min(5, len(epoch_durations) - 1)
+                            recent_durations = epoch_durations[-window_size:]
+                        else:
+                            # Use all epochs if we don't have enough data yet
+                            recent_durations = epoch_durations
+
+                        avg_epoch_time = sum(recent_durations) / len(recent_durations)
+                        remaining_epochs = total_epochs - current_epoch
+
+                        if remaining_epochs > 0:
+                            eta_seconds = int(avg_epoch_time * remaining_epochs)
+                            eta_formatted = format_eta(eta_seconds)
+                        else:
+                            eta_seconds = 0
+                            eta_formatted = "Almost done"
+
+                    # Calculate training speed (epochs per minute)
+                    epochs_per_minute = round(60 / avg_epoch_time, 2) if avg_epoch_time > 0 else 0
+
+                    # Calculate estimated completion time
+                    from datetime import timedelta
+                    if eta_seconds > 0:
+                        completion_time = datetime.now() + timedelta(seconds=eta_seconds)
+                        completion_time_str = completion_time.strftime("%Y-%m-%d %H:%M:%S")
+                    else:
+                        completion_time_str = "N/A"
 
                     # Extract loss metrics (from trainer.metrics if available)
                     metrics = {
+                        # Epoch progress
                         'epoch': current_epoch,
                         'total_epochs': total_epochs,
-                        'eta_seconds': eta_seconds
+                        'progress_percent': progress_percent,
+
+                        # Timing metrics
+                        'epoch_duration': round(epoch_duration, 1),
+                        'avg_epoch_time': round(avg_epoch_time, 1),
+                        'eta_seconds': eta_seconds,
+                        'eta_formatted': eta_formatted,
+                        'completion_time': completion_time_str,
+                        'epochs_per_minute': epochs_per_minute,
+
+                        # Total elapsed time
+                        'total_elapsed': round(epoch_end_time - training_overall_start, 1)
                     }
 
                     # Try to get loss values from trainer
@@ -1064,18 +1305,41 @@ class TrainingService:
                     if progress_callback:
                         progress_callback(metrics)
 
-                    logger.info(f"Epoch {current_epoch}/{total_epochs} completed")
+                    # Enhanced logging with detailed progress information
+                    loss_str = f"{metrics.get('loss', 0.0):.4f}" if 'loss' in metrics else "N/A"
+                    logger.info(
+                        f"Epoch {current_epoch}/{total_epochs} ({progress_percent}%) - "
+                        f"Duration: {epoch_duration:.1f}s - "
+                        f"ETA: {eta_formatted} - "
+                        f"Loss: {loss_str} - "
+                        f"Speed: {epochs_per_minute} epochs/min"
+                    )
+
+                    # Log completion time on first few epochs for user reference
+                    if current_epoch <= 3 and eta_seconds > 0:
+                        logger.info(f"  Estimated completion: {completion_time_str}")
+
+                    # Reset epoch start time for next epoch
+                    epoch_start_time = time.time()
 
                 except Exception as e:
                     logger.error(f"Error in training callback: {e}")
+                    # Still try to reset epoch start time even on error
+                    epoch_start_time = time.time()
 
             # Add callback to model
             model.add_callback('on_train_epoch_end', on_train_epoch_end)
 
             # Start training
-            logger.info(f"Starting model training FROM SCRATCH on {device_name}...")
+            training_mode = 'transfer_learning' if is_pretrained else 'from_scratch'
+            mode_description = 'with transfer learning' if is_pretrained else 'FROM SCRATCH'
+
+            logger.info(f"Starting model training {mode_description} on {device_name}...")
             logger.info(f"Training with {epochs} epochs on custom dataset")
-            logger.info(f"Model will be initialized with random weights (no pretrained base)")
+            if is_pretrained:
+                logger.info(f"Model initialized with pretrained weights (transfer learning)")
+            else:
+                logger.info(f"Model initialized with random weights (training from scratch)")
 
             # Notify start of training with device info
             if progress_callback:
@@ -1085,10 +1349,15 @@ class TrainingService:
                     'total_epochs': epochs,
                     'device': device_name,
                     'device_type': training_device,
-                    'training_mode': 'from_scratch'
+                    'training_mode': training_mode
                 })
 
-            # Train with device specification
+            # Train with device specification and memory-safe parameters
+            logger.info("Training configuration: Memory-safe mode enabled")
+            logger.info(f"  - workers=0 (single-threaded data loading to prevent memory fragmentation)")
+            logger.info(f"  - cache=False (no dataset caching in RAM)")
+            logger.info(f"  - batch_size={batch_size} (images loaded simultaneously)")
+
             try:
                 results = model.train(
                     data=str(data_yaml),
@@ -1096,6 +1365,8 @@ class TrainingService:
                     batch=batch_size,
                     imgsz=img_size,
                     device=training_device,  # Specify device for training
+                    workers=0,               # MEMORY FIX: Single-threaded data loading
+                    cache=False,             # MEMORY FIX: Don't cache images in RAM
                     verbose=True,
                     project='runs/detect',
                     name='train'
@@ -1122,6 +1393,8 @@ class TrainingService:
                         batch=batch_size,
                         imgsz=img_size,
                         device='cpu',
+                        workers=0,               # MEMORY FIX: Single-threaded data loading
+                        cache=False,             # MEMORY FIX: Don't cache images in RAM
                         verbose=True,
                         project='runs/detect',
                         name='train'

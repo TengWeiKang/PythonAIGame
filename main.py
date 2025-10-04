@@ -75,6 +75,11 @@ class MainWindow:
         self._object_selector: Optional[ObjectSelector] = None
         self._temp_selector: Optional[ObjectSelector] = None  # Temporary selector for multi-canvas selection
 
+        # Live detection state
+        self._live_detection_active = False
+        self._class_colors = {}  # Color mapping for detected classes
+        self._detection_in_progress = False  # Flag to prevent concurrent detections
+
         # Check Gemini configuration
         self._gemini_configured = bool(self.config.get('gemini_api_key', '').strip())
 
@@ -366,6 +371,12 @@ class MainWindow:
 
         # Set video canvas to medium quality for optimal performance
         self._video_canvas.set_render_quality('medium')
+
+        # Create right-click context menu for video canvas
+        self._create_video_context_menu()
+
+        # Bind right-click event to video canvas
+        self._video_canvas.bind("<Button-3>", self._on_video_right_click)
 
         # Video controls
         controls_frame = tk.Frame(video_frame, bg=self.COLORS['bg_secondary'], height=40)
@@ -936,6 +947,10 @@ class MainWindow:
                 frame = self.webcam_service.get_current_frame()
 
                 if frame is not None:
+                    # Apply live detection if active
+                    if self._live_detection_active:
+                        frame = self._apply_live_detection(frame)
+
                     # Display frame on canvas
                     self._video_canvas.display_image(frame)
 
@@ -953,6 +968,238 @@ class MainWindow:
 
         # Schedule next update
         self.root.after(33, self._update_video_stream)  # ~30 FPS
+
+    # ========== VIDEO CONTEXT MENU AND LIVE DETECTION ==========
+
+    def _create_video_context_menu(self):
+        """Create right-click context menu for video canvas."""
+        self._video_context_menu = tk.Menu(self.root, tearoff=0)
+        self._video_context_menu.add_command(
+            label="🔍 Test Model (Live Detection)",
+            command=self._toggle_live_detection
+        )
+        self._video_context_menu.add_separator()
+        self._video_context_menu.add_command(
+            label="📸 Capture Frame",
+            command=self._capture_for_training
+        )
+
+    def _on_video_right_click(self, event):
+        """Show context menu on right-click."""
+        try:
+            self._video_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._video_context_menu.grab_release()
+
+    def _toggle_live_detection(self):
+        """Toggle live object detection on video stream."""
+        if self._live_detection_active:
+            # Stop live detection
+            self._live_detection_active = False
+            self._video_context_menu.entryconfig(
+                0,  # First menu item
+                label="🔍 Test Model (Live Detection)"
+            )
+            self.status_label.config(text="Live detection stopped")
+            logger.info("Live detection stopped")
+        else:
+            # Check if inference service is loaded
+            if not self.inference_service:
+                messagebox.showerror(
+                    "Service Not Available",
+                    "Inference service is not initialized."
+                )
+                return
+
+            if not self.inference_service.is_loaded():
+                response = messagebox.askyesno(
+                    "Model Not Loaded",
+                    "No model is currently loaded. Would you like to load the default model?\n\n"
+                    "This will load the YOLO model for object detection."
+                )
+                if response:
+                    # Try to load the model
+                    success = self.inference_service.load_model()
+                    if not success:
+                        messagebox.showerror(
+                            "Model Load Failed",
+                            "Failed to load the detection model. Please check the logs."
+                        )
+                        return
+                else:
+                    return
+
+            # Check if camera is streaming
+            if not self.webcam_service.is_streaming():
+                messagebox.showwarning(
+                    "Camera Not Running",
+                    "Please start the webcam stream first before testing live detection."
+                )
+                return
+
+            # Start detection
+            self._live_detection_active = True
+            self._video_context_menu.entryconfig(
+                0,  # First menu item
+                label="✅ Test Model (Live Detection) - Active"
+            )
+            self.status_label.config(text="Live detection active - right-click to stop")
+            logger.info("Live detection started")
+
+    def _apply_live_detection(self, frame: np.ndarray) -> np.ndarray:
+        """Apply object detection to frame and draw bounding boxes with overlays.
+
+        Args:
+            frame: Input frame from webcam
+
+        Returns:
+            Annotated frame with detections and overlays
+        """
+        # Skip if detection is already in progress to avoid performance issues
+        if self._detection_in_progress:
+            return frame
+
+        try:
+            self._detection_in_progress = True
+
+            # Run inference
+            detections = self.inference_service.detect(frame)
+
+            # Draw detections and overlays
+            annotated_frame = self._draw_live_detections(frame, detections)
+
+            return annotated_frame
+
+        except Exception as e:
+            logger.error(f"Error in live detection: {e}")
+            return frame  # Return original frame on error
+        finally:
+            self._detection_in_progress = False
+
+    def _draw_live_detections(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
+        """Draw detection bounding boxes, labels, and status overlay on frame.
+
+        Args:
+            frame: Input frame
+            detections: List of detection dictionaries from inference service
+
+        Returns:
+            Annotated frame with all visual elements
+        """
+        annotated_frame = frame.copy()
+
+        # Draw bounding boxes and labels for each detection
+        for detection in detections:
+            bbox = detection.get('bbox')  # [x1, y1, x2, y2]
+            label = detection.get('class_name', 'Unknown')
+            confidence = detection.get('confidence', 0.0)
+
+            if bbox is None:
+                continue
+
+            x1, y1, x2, y2 = map(int, bbox)
+
+            # Get consistent color for this class
+            color = self._get_class_color(label)
+
+            # Draw bounding box with thicker line for visibility
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+
+            # Prepare label text
+            label_text = f"{label} {confidence:.2f}"
+            (text_width, text_height), baseline = cv2.getTextSize(
+                label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+            )
+
+            # Draw label background (filled rectangle)
+            cv2.rectangle(
+                annotated_frame,
+                (x1, y1 - text_height - 10),
+                (x1 + text_width, y1),
+                color,
+                -1  # Filled
+            )
+
+            # Draw label text (white for contrast)
+            cv2.putText(
+                annotated_frame,
+                label_text,
+                (x1, y1 - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),  # White text
+                1,
+                cv2.LINE_AA
+            )
+
+        # Draw status overlay
+        annotated_frame = self._draw_detection_overlay(annotated_frame, detections)
+
+        return annotated_frame
+
+    def _draw_detection_overlay(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
+        """Draw status overlay showing live detection info.
+
+        Args:
+            frame: Input frame
+            detections: List of detections
+
+        Returns:
+            Frame with overlay
+        """
+        # Draw semi-transparent background for overlay
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (5, 5), (250, 75), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
+
+        # Draw "LIVE DETECTION" indicator
+        cv2.putText(
+            frame,
+            "LIVE DETECTION",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),  # Green
+            2,
+            cv2.LINE_AA
+        )
+
+        # Draw detection count
+        detection_count = len(detections)
+        cv2.putText(
+            frame,
+            f"Objects: {detection_count}",
+            (10, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),  # Green
+            1,
+            cv2.LINE_AA
+        )
+
+        return frame
+
+    def _get_class_color(self, class_name: str) -> tuple:
+        """Get consistent color for each class.
+
+        Args:
+            class_name: Name of the detected class
+
+        Returns:
+            BGR color tuple
+        """
+        if class_name not in self._class_colors:
+            # Generate random but consistent color based on class name hash
+            import random
+            random.seed(hash(class_name))
+            color = (
+                random.randint(50, 255),
+                random.randint(50, 255),
+                random.randint(50, 255)
+            )
+            self._class_colors[class_name] = color
+
+        return self._class_colors[class_name]
 
     # ========== REFERENCE TAB HANDLERS ==========
 

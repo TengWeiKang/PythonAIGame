@@ -93,6 +93,14 @@ class TrainingProgressDialog:
         self.eta_label = ttk.Label(eta_frame, text="Calculating...", font=('Segoe UI', 10))
         self.eta_label.pack(side='right')
 
+        # Training Speed
+        speed_frame = ttk.Frame(metrics_frame)
+        speed_frame.pack(fill='x', pady=5)
+
+        ttk.Label(speed_frame, text="Speed:").pack(side='left')
+        self.speed_label = ttk.Label(speed_frame, text="--", font=('Segoe UI', 10))
+        self.speed_label.pack(side='right')
+
         # Loss
         loss_frame = ttk.Frame(metrics_frame)
         loss_frame.pack(fill='x', pady=5)
@@ -223,14 +231,34 @@ class TrainingProgressDialog:
 
                     self.progress_bar['value'] = current_epoch
                     self.epoch_label.config(text=f"{current_epoch}/{total_epochs}")
-                    self.update_status(f"Training epoch {current_epoch}/{total_epochs}...")
 
-                # Update ETA
-                if 'eta_seconds' in metrics:
+                # Update ETA - use formatted version if available, otherwise calculate from seconds
+                if 'eta_formatted' in metrics:
+                    # Use the enhanced formatted ETA from training service
+                    self.eta_label.config(text=metrics['eta_formatted'])
+                elif 'eta_seconds' in metrics:
+                    # Fallback to manual formatting for backward compatibility
                     eta_seconds = metrics['eta_seconds']
                     minutes = eta_seconds // 60
                     seconds = eta_seconds % 60
                     self.eta_label.config(text=f"{minutes}m {seconds}s")
+
+                # Update training speed
+                if 'epochs_per_minute' in metrics:
+                    speed = metrics['epochs_per_minute']
+                    self.speed_label.config(text=f"{speed:.2f} epochs/min")
+
+                # Update status with progress information
+                if 'epoch' in metrics and 'total_epochs' in metrics:
+                    current_epoch = metrics['epoch']
+                    total_epochs = metrics['total_epochs']
+                    if 'progress_percent' in metrics:
+                        # Enhanced status with percentage
+                        progress_percent = metrics['progress_percent']
+                        self.update_status(f"Training epoch {current_epoch}/{total_epochs} ({progress_percent}%)...")
+                    else:
+                        # Basic status for backward compatibility
+                        self.update_status(f"Training epoch {current_epoch}/{total_epochs}...")
 
                 # Update loss
                 if 'loss' in metrics:

@@ -108,7 +108,6 @@ class InferenceService:
 
                 # Resize image for inference
                 resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-                cv2.imwrite("output.jpg", resized_image)
                 # Calculate scale factors for coordinate transformation back to original size
                 scale_x = original_width / new_width
                 scale_y = original_height / new_height
