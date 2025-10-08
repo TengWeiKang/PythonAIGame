@@ -105,6 +105,151 @@ class ImageAugmentor:
     SPATIAL_AUGMENTATIONS = {'rotation', 'scaling', 'translation'}
 
     @staticmethod
+    def _get_mean_border_color(image: np.ndarray, border_width: int = 5) -> tuple:
+        """Calculate mean color from image border pixels.
+
+        This is used to fill empty regions created by spatial transformations
+        (rotation, translation, scaling) with a natural color instead of black.
+
+        Args:
+            image: Input image (BGR or grayscale)
+            border_width: Width of border to sample (default 5 pixels)
+
+        Returns:
+            Tuple of mean color (B, G, R) for BGR images or single value for grayscale
+        """
+        h, w = image.shape[:2]
+
+        # Ensure border width doesn't exceed image dimensions
+        border_width = min(border_width, h // 2, w // 2)
+
+        if border_width < 1:
+            # Image too small, return black
+            if len(image.shape) == 3:
+                return (0, 0, 0)
+            else:
+                return 0
+
+        try:
+            # Extract border regions
+            top_border = image[0:border_width, :]
+            bottom_border = image[-border_width:, :]
+            left_border = image[:, 0:border_width]
+            right_border = image[:, -border_width:]
+
+            # Combine all border pixels
+            if len(image.shape) == 3:
+                # Color image (BGR)
+                all_borders = np.vstack([
+                    top_border.reshape(-1, 3),
+                    bottom_border.reshape(-1, 3),
+                    left_border.reshape(-1, 3),
+                    right_border.reshape(-1, 3)
+                ])
+
+                # Calculate mean for each channel
+                mean_color = np.mean(all_borders, axis=0)
+
+                # Check for NaN or invalid values
+                if np.any(np.isnan(mean_color)):
+                    return (0, 0, 0)
+
+                # Convert to integer tuple
+                return tuple(map(int, mean_color))
+            else:
+                # Grayscale image
+                all_borders = np.concatenate([
+                    top_border.flatten(),
+                    bottom_border.flatten(),
+                    left_border.flatten(),
+                    right_border.flatten()
+                ])
+
+                mean_value = np.mean(all_borders)
+
+                # Check for NaN
+                if np.isnan(mean_value):
+                    return 0
+
+                return int(mean_value)
+        except Exception as e:
+            logger.warning(f"Error calculating border color: {e}, using black")
+            return (0, 0, 0) if len(image.shape) == 3 else 0
+
+    @staticmethod
+    def _fill_background_with_random_colors(rotated: np.ndarray, original: np.ndarray,
+                                            background_region: Optional[tuple] = None) -> np.ndarray:
+        """Fill empty regions in rotated image with random colors from background region.
+
+        This creates more realistic augmented images by sampling colors from a specified
+        background region and using random values within the min/max range for each channel.
+
+        Args:
+            rotated: Rotated image with black/solid color gaps
+            original: Original image before rotation
+            background_region: Optional (x1, y1, x2, y2) region to sample background colors from
+
+        Returns:
+            Rotated image with gaps filled with realistic random colors
+        """
+        if background_region is None:
+            # No background region specified, return as-is
+            return rotated
+
+        try:
+            # Extract background region from original image
+            bx1, by1, bx2, by2 = map(int, background_region)
+            h, w = original.shape[:2]
+
+            # Validate and clamp background region
+            bx1 = max(0, min(bx1, w - 1))
+            bx2 = max(bx1 + 1, min(bx2, w))
+            by1 = max(0, min(by1, h - 1))
+            by2 = max(by1 + 1, min(by2, h))
+
+            # Extract background pixels
+            bg_pixels = original[by1:by2, bx1:bx2]
+
+            if bg_pixels.size == 0:
+                logger.warning("Empty background region, skipping intelligent filling")
+                return rotated
+
+            # Calculate min/max for each channel (B, G, R)
+            min_vals = bg_pixels.min(axis=(0, 1))  # Shape: (3,)
+            max_vals = bg_pixels.max(axis=(0, 1))  # Shape: (3,)
+
+            # Find empty regions (pixels that are black or very dark, indicating gaps from rotation)
+            # We detect gaps by looking for pixels that are uniformly black/dark
+            gray = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
+            empty_mask = gray < 5  # Threshold for "empty" pixels
+
+            # Create random colors for empty pixels
+            result = rotated.copy()
+            num_empty = np.sum(empty_mask)
+
+            if num_empty > 0:
+                # Generate random values for each channel
+                for c in range(3):  # B, G, R
+                    random_values = np.random.randint(
+                        int(min_vals[c]),
+                        int(max_vals[c]) + 1,
+                        size=num_empty,
+                        dtype=np.uint8
+                    )
+                    result[empty_mask, c] = random_values
+
+                logger.debug(f"Filled {num_empty} pixels with random background colors "
+                           f"(B: [{min_vals[0]}, {max_vals[0]}], "
+                           f"G: [{min_vals[1]}, {max_vals[1]}], "
+                           f"R: [{min_vals[2]}, {max_vals[2]}])")
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"Error filling background with random colors: {e}, returning original")
+            return rotated
+
+    @staticmethod
     def augment_horizontal_flip(image: np.ndarray) -> np.ndarray:
         """Apply horizontal flip (mirror image).
 
@@ -141,6 +286,10 @@ class ImageAugmentor:
         Returns:
             If return_bbox=False: Rotated image
             If return_bbox=True: Tuple of (rotated_image, bbox) where bbox is (cx, cy, w, h) normalized
+
+        Note:
+            Empty regions created by rotation are filled with the mean color
+            from the original image's 5-pixel border (not black).
         """
         if angle is None:
             angle = random.uniform(-30, 30)
@@ -159,9 +308,12 @@ class ImageAugmentor:
         matrix[0, 2] += (new_w / 2) - center[0]
         matrix[1, 2] += (new_h / 2) - center[1]
 
+        # Calculate mean border color from original image
+        border_color = ImageAugmentor._get_mean_border_color(image, border_width=5)
+
         rotated = cv2.warpAffine(image, matrix, (new_w, new_h),
                                 borderMode=cv2.BORDER_CONSTANT,
-                                borderValue=(0, 0, 0))
+                                borderValue=border_color)
 
         if return_bbox:
             # Calculate bbox for rotated image
@@ -187,6 +339,10 @@ class ImageAugmentor:
         Returns:
             If return_bbox=False: Scaled image
             If return_bbox=True: Tuple of (scaled_image, bbox) where bbox is (cx, cy, w, h) normalized
+
+        Note:
+            When scaling down, padding uses the mean color from the original
+            image's 5-pixel border (not black).
         """
         if scale_factor is None:
             scale_factor = random.uniform(0.8, 1.2)
@@ -204,8 +360,12 @@ class ImageAugmentor:
             bottom = h - new_h - top
             left = (w - new_w) // 2
             right = w - new_w - left
+
+            # Calculate mean border color from original image
+            border_color = ImageAugmentor._get_mean_border_color(image, border_width=5)
+
             scaled = cv2.copyMakeBorder(scaled, top, bottom, left, right,
-                                       cv2.BORDER_CONSTANT, value=(0, 0, 0))
+                                       cv2.BORDER_CONSTANT, value=border_color)
             # Object occupies only the center portion
             bbox_width = scale_factor
             bbox_height = scale_factor
@@ -237,6 +397,10 @@ class ImageAugmentor:
         Returns:
             If return_bbox=False: Translated image
             If return_bbox=True: Tuple of (translated_image, bbox) where bbox is (cx, cy, w, h) normalized
+
+        Note:
+            Empty regions created by translation are filled with the mean color
+            from the original image's 5-pixel border (not black).
         """
         h, w = image.shape[:2]
 
@@ -245,10 +409,13 @@ class ImageAugmentor:
         if ty is None:
             ty = int(random.uniform(-0.1, 0.1) * h)
 
+        # Calculate mean border color from original image
+        border_color = ImageAugmentor._get_mean_border_color(image, border_width=5)
+
         matrix = np.float32([[1, 0, tx], [0, 1, ty]])
         translated = cv2.warpAffine(image, matrix, (w, h),
                                    borderMode=cv2.BORDER_CONSTANT,
-                                   borderValue=(0, 0, 0))
+                                   borderValue=border_color)
 
         if return_bbox:
             # Calculate bbox after translation with proper clipping
@@ -517,34 +684,115 @@ class ImageAugmentor:
 
 
 class TrainingObject:
-    """Represents a training object with image and metadata."""
+    """Represents a training object with full frame and bbox annotation.
 
-    def __init__(self, image: np.ndarray, label: str, bbox: Optional[tuple] = None,
-                 object_id: Optional[str] = None):
+    IMPORTANT: This class now stores FULL FRAMES with bounding box annotations,
+    not cropped objects. This ensures proper bbox localization during training.
+    """
+
+    def __init__(self, image: np.ndarray, label: str, bbox: tuple,
+                 background_region: Optional[tuple] = None,
+                 segmentation: Optional[List[float]] = None,
+                 threshold: Optional[int] = None,
+                 object_id: Optional[str] = None,
+                 image_id: Optional[str] = None):
         """Initialize training object.
 
         Args:
-            image: Cropped object image
+            image: FULL FRAME image (NOT cropped!)
             label: Object class label
-            bbox: Optional bounding box (x1, y1, x2, y2)
-            object_id: Unique identifier
+            bbox: Bounding box coordinates (x1, y1, x2, y2) in image pixel coordinates
+                  REQUIRED - must specify where the object is in the full frame
+            background_region: Optional background region (x1, y1, x2, y2) for sampling
+                             background colors during augmentation. If None, uses image
+                             border mean color as fallback.
+            segmentation: Optional YOLO segmentation points [x1, y1, x2, y2, ...] normalized to [0, 1]
+            threshold: Optional threshold value used for segmentation extraction
+            object_id: Unique identifier for this specific object
+            image_id: Identifier to group objects from the same source image
         """
-        self.image = image
+        if bbox is None:
+            raise ValueError("bbox is required! Must provide object location in full frame.")
+
+        self.image = image  # FULL FRAME (not cropped)
         self.label = label
-        self.bbox = bbox
+        self.bbox = bbox  # (x1, y1, x2, y2) in pixel coordinates
+        self.background_region = background_region  # Optional (x1, y1, x2, y2) or None
+        self.segmentation = segmentation or []  # YOLO segmentation format
+        self.threshold = threshold  # Threshold value used
         self.object_id = object_id or self._generate_id()
+        self.image_id = image_id or self._generate_id()  # NEW: Track source image
         self.timestamp = datetime.now()
+
+        # Validate bbox
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = bbox
+        if x1 < 0 or y1 < 0 or x2 > w or y2 > h or x1 >= x2 or y1 >= y2:
+            logger.warning(f"Invalid bbox {bbox} for image {w}x{h}, will clamp to valid range")
+
+        # Validate background_region if provided
+        if background_region is not None:
+            bx1, by1, bx2, by2 = background_region
+            if bx1 < 0 or by1 < 0 or bx2 > w or by2 > h or bx1 >= bx2 or by1 >= by2:
+                logger.warning(f"Invalid background_region {background_region} for image {w}x{h}, will be ignored")
+                self.background_region = None
 
     def _generate_id(self) -> str:
         """Generate unique ID for object."""
         return f"obj_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
+    def get_cropped_object(self) -> np.ndarray:
+        """Extract cropped object from full frame using bbox.
+
+        Returns:
+            Cropped object image
+        """
+        x1, y1, x2, y2 = map(int, self.bbox)
+        h, w = self.image.shape[:2]
+
+        # Clamp coordinates
+        x1 = max(0, min(x1, w - 1))
+        x2 = max(0, min(x2, w))
+        y1 = max(0, min(y1, h - 1))
+        y2 = max(0, min(y2, h))
+
+        return self.image[y1:y2, x1:x2].copy()
+
+    def get_bbox_normalized(self) -> tuple:
+        """Get normalized bbox in YOLO format (cx, cy, w, h).
+
+        Returns:
+            Tuple of (center_x, center_y, width, height) normalized to [0, 1]
+        """
+        h, w = self.image.shape[:2]
+        x1, y1, x2, y2 = self.bbox
+
+        # Calculate center and size
+        cx = ((x1 + x2) / 2) / w
+        cy = ((y1 + y2) / 2) / h
+        bbox_w = (x2 - x1) / w
+        bbox_h = (y2 - y1) / h
+
+        # Clamp to valid range [0, 1]
+        cx = max(0.0, min(1.0, cx))
+        cy = max(0.0, min(1.0, cy))
+        bbox_w = max(0.0, min(1.0, bbox_w))
+        bbox_h = max(0.0, min(1.0, bbox_h))
+
+        return (cx, cy, bbox_w, bbox_h)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
+        h, w = self.image.shape[:2]
         return {
             'object_id': self.object_id,
+            'image_id': self.image_id,  # NEW: Store image_id
             'label': self.label,
             'bbox': self.bbox,
+            'background_region': self.background_region,  # Store background region
+            'segmentation': self.segmentation,  # Store segmentation points
+            'threshold': self.threshold,  # Store threshold value
+            'image_size': (w, h),  # Store for validation
             'timestamp': self.timestamp.isoformat()
         }
 
@@ -566,25 +814,45 @@ class TrainingService:
         self.objects: List[TrainingObject] = []
         self._load_objects()
 
-    def add_object(self, image: np.ndarray, label: str, bbox: Optional[tuple] = None) -> TrainingObject:
+    def add_object(self, image: np.ndarray, label: str, bbox: tuple,
+                   background_region: Optional[tuple] = None,
+                   segmentation: Optional[List[float]] = None,
+                   threshold: Optional[int] = None,
+                   image_id: Optional[str] = None) -> TrainingObject:
         """Add object to training dataset.
 
         Args:
-            image: Cropped object image
+            image: FULL FRAME image (NOT cropped!)
             label: Object class label
-            bbox: Optional bounding box
+            bbox: Bounding box (x1, y1, x2, y2) in pixel coordinates - REQUIRED!
+            background_region: Optional background region (x1, y1, x2, y2) for augmentation
+            segmentation: Optional YOLO segmentation points [x1, y1, x2, y2, ...] normalized
+            threshold: Optional threshold value used for segmentation
+            image_id: Optional identifier to group objects from the same source image
 
         Returns:
             Created TrainingObject
         """
-        obj = TrainingObject(image, label, bbox)
+        if bbox is None:
+            raise ValueError("bbox is required! Must provide object location in full frame.")
+
+        obj = TrainingObject(
+            image, label, bbox,
+            background_region=background_region,
+            segmentation=segmentation,
+            threshold=threshold,
+            image_id=image_id
+        )
         self.objects.append(obj)
 
         # Save object image
         self._save_object_image(obj)
         self._save_metadata()
 
-        logger.info(f"Added training object: {obj.label} (ID: {obj.object_id})")
+        bg_info = f" with background region {background_region}" if background_region else ""
+        seg_info = f", {len(segmentation) // 2} segmentation points" if segmentation else ""
+        img_id_info = f", image_id={image_id}" if image_id else ""
+        logger.info(f"Added training object: {obj.label} at bbox {bbox}{bg_info}{seg_info}{img_id_info} (ID: {obj.object_id})")
         return obj
 
     def get_object(self, object_id: str) -> Optional[TrainingObject]:
@@ -825,22 +1093,127 @@ class TrainingService:
 
         return augmented_images
 
+    def _clear_train_folder(self, train_dir: Path):
+        """Clear all images and labels from train folder before augmentation.
+
+        This ensures that old augmented images don't mix with new ones,
+        preventing training on outdated or inconsistent data.
+
+        Args:
+            train_dir: Path to train directory (e.g., export_dir/images/train or export_dir/labels/train)
+        """
+        try:
+            if not train_dir.exists():
+                logger.debug(f"Train directory does not exist yet: {train_dir}")
+                return
+
+            # Count files before deletion
+            deleted_count = 0
+
+            # Clear image files
+            for file_path in train_dir.iterdir():
+                if file_path.is_file():
+                    # Only delete image and label files (safety check)
+                    if file_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.txt']:
+                        try:
+                            file_path.unlink()
+                            deleted_count += 1
+                            logger.debug(f"Deleted: {file_path.name}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete {file_path.name}: {e}")
+                    else:
+                        logger.warning(f"Skipping non-image/label file: {file_path.name}")
+
+            if deleted_count > 0:
+                logger.info(f"Cleared {deleted_count} files from {train_dir}")
+            else:
+                logger.debug(f"No files to clear in {train_dir}")
+
+        except Exception as e:
+            logger.error(f"Error clearing train folder {train_dir}: {e}")
+            # Don't fail the entire export if cleanup fails
+            # Just log the error and continue
+
+    def _add_random_padding(self, image: np.ndarray,
+                           min_pad_percent: float = 0.15,
+                           max_pad_percent: float = 0.60) -> tuple[np.ndarray, tuple]:
+        """Add random padding around an image to create position and scale diversity.
+
+        This solves the "cropped object training" problem where all training images
+        have objects centered and filling the frame (bbox always 0.5, 0.5, 1.0, 1.0).
+
+        By adding random padding:
+        - Objects appear at different positions (not always centered)
+        - Objects appear at different scales (not always full-frame)
+        - Model learns proper object localization
+
+        Args:
+            image: Input image (cropped object)
+            min_pad_percent: Minimum padding as percentage of image dimensions (default 15%)
+            max_pad_percent: Maximum padding as percentage of image dimensions (default 60%)
+
+        Returns:
+            Tuple of (padded_image, bbox) where bbox is (cx, cy, w, h) in normalized coordinates
+        """
+        h, w = image.shape[:2]
+
+        # Generate random padding for each side independently
+        # This creates diverse object positions (not always centered)
+        pad_top = random.randint(int(h * min_pad_percent), int(h * max_pad_percent))
+        pad_bottom = random.randint(int(h * min_pad_percent), int(h * max_pad_percent))
+        pad_left = random.randint(int(w * min_pad_percent), int(w * max_pad_percent))
+        pad_right = random.randint(int(w * min_pad_percent), int(w * max_pad_percent))
+
+        # Calculate mean border color from original image (before padding)
+        # This ensures padding matches the image's natural edge color, not black
+        border_color = ImageAugmentor._get_mean_border_color(image, border_width=5)
+
+        # Add padding with mean border color (NOT black!)
+        padded_img = cv2.copyMakeBorder(
+            image,
+            pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT,
+            value=border_color
+        )
+
+        # Calculate bbox for the original object within the padded image
+        new_h, new_w = padded_img.shape[:2]
+
+        # Object center in padded image (absolute pixels)
+        obj_center_x = pad_left + (w / 2)
+        obj_center_y = pad_top + (h / 2)
+
+        # Normalize to [0, 1] for YOLO format
+        bbox_cx = obj_center_x / new_w
+        bbox_cy = obj_center_y / new_h
+        bbox_w = w / new_w
+        bbox_h = h / new_h
+
+        # Ensure bbox values are valid [0, 1]
+        bbox_cx = max(0.0, min(1.0, bbox_cx))
+        bbox_cy = max(0.0, min(1.0, bbox_cy))
+        bbox_w = max(0.0, min(1.0, bbox_w))
+        bbox_h = max(0.0, min(1.0, bbox_h))
+
+        bbox = (bbox_cx, bbox_cy, bbox_w, bbox_h)
+
+        return padded_img, bbox
+
     def _export_yolo_format(self, export_dir: Path, objects: List[TrainingObject],
                            enable_augmentation: bool = False,
                            augmentation_factor: int = 3,
                            augmentation_types: Optional[List[str]] = None) -> bool:
         """Export dataset in YOLO format with optional data augmentation.
 
-        The augmentation factor is applied per selected method, not per original image.
-        This means each augmentation method is applied multiple times to generate diverse
-        variations with different random parameters.
+        IMPORTANT: Objects are now grouped by image_id to create one label file per image.
+        Multiple objects from the same source image will share one image file and one label
+        file with multiple lines (one per object).
 
         Args:
             export_dir: Export directory
             objects: List of objects to export
             enable_augmentation: Whether to apply data augmentation
-            augmentation_factor: How many times to apply EACH augmentation method
-                                Example: 3 images × 5 methods × 3 factor = 3 + 45 = 48 total
+            augmentation_factor: How many times to apply augmentation
             augmentation_types: List of augmentation types to apply
 
         Returns:
@@ -853,120 +1226,200 @@ class TrainingService:
             images_dir.mkdir(parents=True, exist_ok=True)
             labels_dir.mkdir(parents=True, exist_ok=True)
 
+            # Clear existing files from train folder to prevent old augmented images from mixing
+            logger.info("Clearing existing files from train folders...")
+            self._clear_train_folder(images_dir)
+            self._clear_train_folder(labels_dir)
+            logger.info("Train folders cleared - ready for fresh export")
+
             # Get unique class labels
             class_labels = sorted(list(set(obj.label for obj in objects)))
             class_map = {label: idx for idx, label in enumerate(class_labels)}
 
+            # Group objects by image_id - THIS IS THE KEY FIX
+            from collections import defaultdict
+            image_groups = defaultdict(list)
+            for obj in objects:
+                image_groups[obj.image_id].append(obj)
+
+            logger.info(f"Grouped {len(objects)} objects into {len(image_groups)} unique images")
+
             # Counter for images
             img_counter = 0
 
-            # Calculate total images with hybrid deterministic/stochastic approach
-            if enable_augmentation and augmentation_types:
-                # Separate deterministic and stochastic methods
-                deterministic_methods = [m for m in augmentation_types if m in ImageAugmentor.DETERMINISTIC_METHODS]
-                stochastic_methods = [m for m in augmentation_types if m in ImageAugmentor.STOCHASTIC_METHODS]
+            # Statistics tracking for bbox diversity
+            bbox_stats = {
+                'positions_x': [],  # Center X positions
+                'positions_y': [],  # Center Y positions
+                'widths': [],       # Bbox widths
+                'heights': []       # Bbox heights
+            }
 
-                # Deterministic: 1 image per method
-                deterministic_count = len(deterministic_methods) * 1
-
-                # Stochastic: augmentation_factor images per method
-                stochastic_count = len(stochastic_methods) * augmentation_factor
-
-                # Total augmented images per original image
-                augmented_per_image = deterministic_count + stochastic_count
-                total_augmented = len(objects) * augmented_per_image
-                total_images = len(objects) + total_augmented
+            # Calculate total images with rotation-only approach
+            if enable_augmentation and 'rotation' in augmentation_types:
+                num_rotations = augmentation_factor - 1 if augmentation_factor > 1 else 0
+                total_augmented = len(image_groups) * num_rotations
+                total_images = len(image_groups) + total_augmented
             else:
-                total_images = len(objects)
-                deterministic_methods = []
-                stochastic_methods = []
+                total_images = len(image_groups)
+                num_rotations = 0
 
-            logger.info(f"Exporting dataset with augmentation: {enable_augmentation}")
-            if enable_augmentation:
-                logger.info(f"Augmentation approach: Hybrid (deterministic 1×, stochastic {augmentation_factor}×)")
-                logger.info(f"Selected augmentation methods ({len(augmentation_types)} total):")
-                if deterministic_methods:
-                    logger.info(f"  • Deterministic (1× each): {', '.join(deterministic_methods)}")
-                if stochastic_methods:
-                    logger.info(f"  • Stochastic ({augmentation_factor}× each): {', '.join(stochastic_methods)}")
+            logger.info(f"Exporting dataset with rotation augmentation: {enable_augmentation}")
+            if enable_augmentation and 'rotation' in augmentation_types:
+                logger.info(f"Augmentation approach: Bbox-only rotation (preserves background)")
+                logger.info(f"  - Only objects within their bboxes are rotated")
+                logger.info(f"  - Background remains intact, objects rotate within their regions")
+                logger.info(f"Augmentation factor: {augmentation_factor} (1 original + {num_rotations} rotated versions)")
+                logger.info(f"Rotation angles: Random between 0° and 360° (full rotation range)")
 
-                # Check for spatial augmentations with bbox tracking
-                spatial_methods = [m for m in augmentation_types if m in ImageAugmentor.SPATIAL_AUGMENTATIONS]
-                if spatial_methods:
-                    logger.info(f"  • Spatial augmentations with bbox tracking: {', '.join(spatial_methods)}")
-                    logger.info(f"    (These augmentations change object position/size, bbox will be calculated)")
+                # Check if background regions are provided
+                objects_with_bg = sum(1 for obj in objects if obj.background_region is not None)
+                if objects_with_bg > 0:
+                    logger.info(f"Background regions: {objects_with_bg}/{len(objects)} objects have background regions")
+                    logger.info(f"  → Using min/max random color filling for empty pixels in rotated bbox")
+                else:
+                    logger.info(f"Background regions: None provided")
+                    logger.info(f"  → Using mean border color for empty pixels in rotated bbox")
 
-                logger.info(f"Total images to export: {total_images} = {len(objects)} original + "
-                          f"{total_augmented} augmented ({len(deterministic_methods)}×1 + {len(stochastic_methods)}×{augmentation_factor} per image)")
+                logger.info(f"Total images to export: {total_images} = {len(image_groups)} original + "
+                          f"{total_augmented} rotated ({num_rotations} rotations per image)")
 
-            # Export images and labels
-            for obj_idx, obj in enumerate(objects):
-                # Save original image
+            # Export images and labels - GROUP BY IMAGE_ID
+            for img_idx, (image_id, objects_on_image) in enumerate(image_groups.items()):
+                # Use the first object's image (all objects from same image share the same frame)
+                source_image = objects_on_image[0].image
+
+                # Save FULL FRAME once for all objects on this image
                 img_name = f"{img_counter:04d}.jpg"
                 img_path = images_dir / img_name
-                cv2.imwrite(str(img_path), obj.image)
+                cv2.imwrite(str(img_path), source_image)
 
-                # Create label file (center_x, center_y, width, height - normalized)
-                h, w = obj.image.shape[:2]
-                class_idx = class_map[obj.label]
-
-                # For cropped objects, bbox is the full image
+                # Create label file with ALL objects from this image
                 label_path = labels_dir / f"{img_counter:04d}.txt"
                 with open(label_path, 'w') as f:
-                    # Full image bbox in normalized YOLO format
-                    f.write(f"{class_idx} 0.5 0.5 1.0 1.0\n")
+                    for obj in objects_on_image:
+                        # Get class index
+                        class_idx = class_map[obj.label]
+
+                        # Get normalized bbox
+                        cx, cy, bw, bh = obj.get_bbox_normalized()
+
+                        # Write one line per object
+                        if obj.segmentation and len(obj.segmentation) > 0:
+                            # YOLO segmentation format: class_idx x1 y1 x2 y2 x3 y3 ... (normalized)
+                            seg_str = ' '.join(f"{coord:.6f}" for coord in obj.segmentation)
+                            f.write(f"{class_idx} {seg_str}\n")
+                        else:
+                            # Fallback to YOLO bbox format: class_idx center_x center_y width height (normalized)
+                            f.write(f"{class_idx} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
+
+                        # Track bbox statistics
+                        bbox_stats['positions_x'].append(cx)
+                        bbox_stats['positions_y'].append(cy)
+                        bbox_stats['widths'].append(bw)
+                        bbox_stats['heights'].append(bh)
 
                 img_counter += 1
 
-                # Apply augmentations if enabled
-                if enable_augmentation and augmentation_types:
-                    # Get augmented images with their identifiers and bboxes
-                    # Each method is applied augmentation_factor times
-                    augmented_images = self._apply_augmentations(
-                        obj.image, augmentation_types, augmentation_factor
-                    )
+                # Apply rotation augmentation if enabled (bbox-only rotation approach)
+                # Now handles multiple objects per image
+                if enable_augmentation and 'rotation' in augmentation_types:
+                    num_rotations = augmentation_factor - 1 if augmentation_factor > 1 else 0
 
-                    # Save each augmented image with descriptive filename
-                    for aug_image, aug_identifier, bbox in augmented_images:
-                        # Create filename with augmentation identifier
-                        # Example: 0001_rotation_1.jpg, 0001_rotation_2.jpg, 0001_brightness_1.jpg, etc.
-                        aug_img_name = f"{img_counter:04d}_{aug_identifier}.jpg"
+                    for rotation_idx in range(num_rotations):
+                        # Start with original image
+                        augmented_image = source_image.copy()
+                        h, w = source_image.shape[:2]
+
+                        # Rotate EACH object independently and composite onto same image
+                        for obj in objects_on_image:
+                            # Generate random rotation angle for this object
+                            angle = random.uniform(0, 360)
+
+                            # Extract bbox coordinates
+                            x1, y1, x2, y2 = map(int, obj.bbox)
+
+                            # Add padding to bbox for rotation space
+                            padding = 50
+                            padded_x1 = max(0, x1 - padding)
+                            padded_y1 = max(0, y1 - padding)
+                            padded_x2 = min(w, x2 + padding)
+                            padded_y2 = min(h, y2 + padding)
+
+                            # Extract bbox region with padding
+                            bbox_region = source_image[padded_y1:padded_y2, padded_x1:padded_x2].copy()
+                            bbox_h, bbox_w = bbox_region.shape[:2]
+
+                            if bbox_h == 0 or bbox_w == 0:
+                                logger.warning(f"Invalid bbox region size: {bbox_w}x{bbox_h}, skipping object rotation")
+                                continue
+
+                            # Rotate bbox region only
+                            bbox_center = (bbox_w // 2, bbox_h // 2)
+                            rotation_matrix = cv2.getRotationMatrix2D(bbox_center, angle, 1.0)
+
+                            # Rotate with black border initially
+                            rotated_bbox = cv2.warpAffine(
+                                bbox_region,
+                                rotation_matrix,
+                                (bbox_w, bbox_h),
+                                borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=(0, 0, 0)
+                            )
+
+                            # Fill empty pixels in rotated bbox
+                            if obj.background_region is not None:
+                                rotated_bbox = ImageAugmentor._fill_background_with_random_colors(
+                                    rotated_bbox, source_image, obj.background_region
+                                )
+                            else:
+                                border_color = ImageAugmentor._get_mean_border_color(bbox_region, border_width=5)
+                                gray = cv2.cvtColor(rotated_bbox, cv2.COLOR_BGR2GRAY)
+                                empty_mask = gray < 5
+                                if np.any(empty_mask):
+                                    rotated_bbox[empty_mask] = border_color
+
+                            # Paste rotated bbox back onto augmented image
+                            augmented_image[padded_y1:padded_y2, padded_x1:padded_x2] = rotated_bbox
+
+                        # Save augmented image (with all rotated objects)
+                        aug_img_name = f"{img_counter:04d}_rotation_{rotation_idx + 1}.jpg"
                         aug_img_path = images_dir / aug_img_name
-                        cv2.imwrite(str(aug_img_path), aug_image)
+                        cv2.imwrite(str(aug_img_path), augmented_image)
 
-                        # Create label file for augmented image
-                        aug_h, aug_w = aug_image.shape[:2]
-                        aug_label_path = labels_dir / f"{img_counter:04d}_{aug_identifier}.txt"
-
-                        # Use calculated bbox if available, otherwise use default full-image bbox
-                        if bbox is not None:
-                            # Spatial augmentation with calculated bbox
-                            cx, cy, bw, bh = bbox
-                            # Ensure bbox values are within valid range [0, 1]
-                            cx = max(0.0, min(1.0, cx))
-                            cy = max(0.0, min(1.0, cy))
-                            bw = max(0.0, min(1.0, bw))
-                            bh = max(0.0, min(1.0, bh))
-                        else:
-                            # Non-spatial augmentation or no bbox returned - object still fills frame
-                            cx, cy, bw, bh = 0.5, 0.5, 1.0, 1.0
-
+                        # Create label file with ALL objects (same bbox positions)
+                        aug_label_path = labels_dir / f"{img_counter:04d}_rotation_{rotation_idx + 1}.txt"
                         with open(aug_label_path, 'w') as f:
-                            # YOLO format: class_idx center_x center_y width height (normalized)
-                            f.write(f"{class_idx} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
+                            for obj in objects_on_image:
+                                class_idx = class_map[obj.label]
+                                cx, cy, bw, bh = obj.get_bbox_normalized()
+
+                                if obj.segmentation and len(obj.segmentation) > 0:
+                                    seg_str = ' '.join(f"{coord:.6f}" for coord in obj.segmentation)
+                                    f.write(f"{class_idx} {seg_str}\n")
+                                else:
+                                    f.write(f"{class_idx} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
+
+                                # Track bbox statistics
+                                bbox_stats['positions_x'].append(cx)
+                                bbox_stats['positions_y'].append(cy)
+                                bbox_stats['widths'].append(bw)
+                                bbox_stats['heights'].append(bh)
 
                         img_counter += 1
 
-                # Log progress every 10 objects
-                if (obj_idx + 1) % 10 == 0:
-                    logger.info(f"Exported {obj_idx + 1}/{len(objects)} objects "
-                              f"({img_counter} total images so far)")
+                        logger.debug(f"Created rotation {rotation_idx + 1}/{num_rotations} with {len(objects_on_image)} objects")
+
+                # Log progress every 10 images
+                if (img_idx + 1) % 10 == 0:
+                    logger.info(f"Exported {img_idx + 1}/{len(image_groups)} unique images "
+                              f"({img_counter} total images with augmentation)")
 
             # Create data.yaml
             yaml_content = {
                 'path': str(export_dir.absolute()),
                 'train': 'images/train',
-                'val': 'images/train',  # FIX: Changed from 'labels/train' to 'images/train' for validation
+                'val': 'images/train',
                 'names': {idx: label for label, idx in class_map.items()}
             }
 
@@ -975,19 +1428,90 @@ class TrainingService:
                 import yaml
                 yaml.dump(yaml_content, f)
 
-            logger.info(f"Export complete: {len(objects)} objects exported as {img_counter} total images")
-            if enable_augmentation:
-                # Calculate actual multiplier with hybrid approach
-                deterministic_methods = [m for m in augmentation_types if m in ImageAugmentor.DETERMINISTIC_METHODS]
-                stochastic_methods = [m for m in augmentation_types if m in ImageAugmentor.STOCHASTIC_METHODS]
-                augmented_per_image = len(deterministic_methods) + (len(stochastic_methods) * augmentation_factor)
-                multiplier = augmented_per_image + 1  # +1 for original
+            logger.info(f"Export complete: {len(objects)} objects grouped into {len(image_groups)} unique images")
+            logger.info(f"Total exported images: {img_counter} (including augmentation)")
+            if enable_augmentation and 'rotation' in augmentation_types:
+                multiplier = augmentation_factor
 
-                logger.info(f"Augmentation: Applied {len(deterministic_methods)} deterministic (1×) + "
-                          f"{len(stochastic_methods)} stochastic ({augmentation_factor}×) methods")
-                logger.info(f"Dataset increased by {multiplier}× = 1 original + {augmented_per_image} augmented per image")
-                logger.info(f"Each original image generated {augmented_per_image} augmented variations "
-                          f"({len(deterministic_methods)} deterministic + {len(stochastic_methods)}×{augmentation_factor} stochastic)")
+                logger.info(f"Augmentation: Bbox-only rotation applied (background preserved)")
+                logger.info(f"Dataset increased by {multiplier}× = 1 original + {num_rotations} rotated per image")
+                logger.info(f"Each unique image generated {num_rotations} rotated variations")
+
+            # Log bbox diversity statistics
+            if bbox_stats['positions_x']:
+                logger.info("")
+                logger.info("=" * 80)
+                logger.info("BOUNDING BOX DIVERSITY STATISTICS")
+                logger.info("=" * 80)
+                logger.info("This shows the diversity in object positions and scales.")
+                logger.info("Good diversity prevents the 'all objects centered and full-frame' problem.")
+                logger.info("")
+
+                # Calculate statistics
+                pos_x = bbox_stats['positions_x']
+                pos_y = bbox_stats['positions_y']
+                widths = bbox_stats['widths']
+                heights = bbox_stats['heights']
+
+                # Position diversity (center points)
+                avg_x = sum(pos_x) / len(pos_x)
+                avg_y = sum(pos_y) / len(pos_y)
+                min_x, max_x = min(pos_x), max(pos_x)
+                min_y, max_y = min(pos_y), max(pos_y)
+                std_x = (sum((x - avg_x) ** 2 for x in pos_x) / len(pos_x)) ** 0.5
+                std_y = (sum((y - avg_y) ** 2 for y in pos_y) / len(pos_y)) ** 0.5
+
+                # Scale diversity (bbox sizes)
+                avg_w = sum(widths) / len(widths)
+                avg_h = sum(heights) / len(heights)
+                min_w, max_w = min(widths), max(widths)
+                min_h, max_h = min(heights), max(heights)
+                std_w = (sum((w - avg_w) ** 2 for w in widths) / len(widths)) ** 0.5
+                std_h = (sum((h - avg_h) ** 2 for h in heights) / len(heights)) ** 0.5
+
+                logger.info("POSITION DIVERSITY (Center Points):")
+                logger.info(f"  Center X: avg={avg_x:.3f}, range=[{min_x:.3f}, {max_x:.3f}], std={std_x:.3f}")
+                logger.info(f"  Center Y: avg={avg_y:.3f}, range=[{min_y:.3f}, {max_y:.3f}], std={std_y:.3f}")
+                logger.info(f"  Analysis: Objects spread across {(max_x - min_x) * 100:.1f}% of width, "
+                          f"{(max_y - min_y) * 100:.1f}% of height")
+
+                # Interpret position diversity
+                if std_x < 0.05 and std_y < 0.05:
+                    logger.warning("  WARNING: Low position diversity - objects too centered!")
+                elif std_x > 0.15 and std_y > 0.15:
+                    logger.info("  EXCELLENT: High position diversity - objects well distributed!")
+                else:
+                    logger.info("  GOOD: Moderate position diversity")
+
+                logger.info("")
+                logger.info("SCALE DIVERSITY (Object Sizes):")
+                logger.info(f"  Width: avg={avg_w:.3f}, range=[{min_w:.3f}, {max_w:.3f}], std={std_w:.3f}")
+                logger.info(f"  Height: avg={avg_h:.3f}, range=[{min_h:.3f}, {max_h:.3f}], std={std_h:.3f}")
+                logger.info(f"  Analysis: Object sizes vary from {min_w * 100:.1f}% to {max_w * 100:.1f}% of image width")
+
+                # Interpret scale diversity
+                if avg_w > 0.95 and avg_h > 0.95:
+                    logger.warning("  WARNING: Objects fill entire frame - no scale diversity!")
+                elif avg_w < 0.5 and avg_h < 0.5:
+                    logger.info("  EXCELLENT: Objects are small relative to frame - good scale diversity!")
+                else:
+                    logger.info("  GOOD: Objects have moderate size relative to frame")
+
+                logger.info("")
+                logger.info("EXPECTED MODEL BEHAVIOR:")
+                if std_x > 0.10 and std_y > 0.10 and avg_w < 0.7 and avg_h < 0.7:
+                    logger.info("  The model should learn to detect individual objects with accurate bboxes.")
+                    logger.info("  Bboxes should tightly fit around objects, not encompass entire regions.")
+                elif avg_w > 0.9 or avg_h > 0.9:
+                    logger.warning("  The model may still struggle with accurate localization.")
+                    logger.warning("  Consider retraining with more aggressive padding (60-80%).")
+                else:
+                    logger.info("  The model should perform better than before, but may need fine-tuning.")
+
+                logger.info("")
+                logger.info(f"Total bounding boxes: {len(pos_x)} (across {img_counter} training images)")
+                logger.info("=" * 80)
+                logger.info("")
 
             return True
 
@@ -1105,6 +1629,18 @@ class TrainingService:
             if memory_info:
                 logger.info(f"GPU Memory: {memory_info['free_mb']:.0f}MB free / {memory_info['total_mb']:.0f}MB total")
 
+            # Validate training objects exist before starting
+            if not self.objects:
+                logger.error("No training objects available for training")
+                if progress_callback:
+                    progress_callback({
+                        'status': 'error',
+                        'message': 'No training objects found. Please add objects before training.'
+                    })
+                return False
+
+            logger.info(f"Training with {len(self.objects)} objects")
+
             # Export dataset first (uses all objects with augmentation if configured)
             dataset_dir = self.data_dir / "exported_dataset"
             if not self._export_all_objects(str(dataset_dir), config=self.config):
@@ -1199,11 +1735,17 @@ class TrainingService:
                 nonlocal epoch_start_time  # Need to update this for next epoch
 
                 try:
-                    # Check for cancellation
+                    # Check for cancellation - IMMEDIATE STOP via exception
                     if cancellation_check and cancellation_check():
-                        logger.info("Training cancellation requested")
-                        trainer.stop = True  # Signal YOLO to stop training
-                        return
+                        logger.info("=" * 60)
+                        logger.info("TRAINING CANCELLATION REQUESTED")
+                        logger.info(f"Current epoch: {trainer.epoch + 1}/{trainer.epochs}")
+                        logger.info("Stopping immediately via KeyboardInterrupt...")
+                        logger.info("=" * 60)
+
+                        # Raise KeyboardInterrupt to immediately stop training (even mid-epoch)
+                        # This is more immediate than trainer.stop = True which waits for epoch end
+                        raise KeyboardInterrupt("Training cancelled by user")
 
                     # Extract metrics from trainer
                     current_epoch = trainer.epoch + 1  # YOLO uses 0-based indexing
@@ -1322,6 +1864,10 @@ class TrainingService:
                     # Reset epoch start time for next epoch
                     epoch_start_time = time.time()
 
+                except KeyboardInterrupt:
+                    # Re-raise to propagate cancellation to main try-except
+                    logger.info("Cancellation exception raised - propagating to stop training")
+                    raise
                 except Exception as e:
                     logger.error(f"Error in training callback: {e}")
                     # Still try to reset epoch start time even on error
@@ -1352,11 +1898,41 @@ class TrainingService:
                     'training_mode': training_mode
                 })
 
-            # Train with device specification and memory-safe parameters
-            logger.info("Training configuration: Memory-safe mode enabled")
-            logger.info(f"  - workers=0 (single-threaded data loading to prevent memory fragmentation)")
-            logger.info(f"  - cache=False (no dataset caching in RAM)")
-            logger.info(f"  - batch_size={batch_size} (images loaded simultaneously)")
+            # OPTIMIZED TRAINING CONFIGURATION
+            # Get optimization settings from config with smart defaults
+            workers = self.config.get('training_workers', 2)  # Default: 2 workers
+            cache_mode = self.config.get('training_cache', 'ram')  # Default: RAM caching
+
+            # Determine cache setting based on dataset size
+            # For small datasets (<500 images), RAM caching is highly beneficial
+            dataset_image_count = len(self.objects) if hasattr(self, 'objects') and self.objects else 0
+            if cache_mode == 'auto':
+                # Auto-detect: use RAM cache for datasets < 500 images
+                cache_setting = 'ram' if dataset_image_count < 500 else False
+                logger.info(f"Auto-cache: Using {'RAM' if cache_setting == 'ram' else 'no'} cache for {dataset_image_count} images")
+            elif cache_mode in ['ram', 'disk', True]:
+                cache_setting = cache_mode
+            else:
+                cache_setting = False
+
+            # Log optimized training configuration
+            logger.info("OPTIMIZED Training Configuration:")
+            logger.info(f"  - Device: {training_device}")
+            logger.info(f"  - Batch size: {batch_size} images per batch")
+            logger.info(f"  - Workers: {workers} (parallel data loading threads)")
+            logger.info(f"  - Cache: {cache_setting} ({'RAM caching enabled - faster epochs!' if cache_setting == 'ram' else 'No caching'})")
+            logger.info(f"  - Image size: {img_size}x{img_size}")
+            logger.info(f"  - Epochs: {epochs}")
+
+            # Performance estimation
+            if cache_setting == 'ram':
+                logger.info("💡 Performance boost: RAM caching will speed up epochs significantly (30-50% faster)")
+            if workers > 0:
+                logger.info(f"💡 Performance boost: {workers} workers will prevent GPU starvation (20-30% faster)")
+
+            # Training results variable (will be set in try block)
+            results = None
+            training_cancelled = False
 
             try:
                 results = model.train(
@@ -1365,12 +1941,31 @@ class TrainingService:
                     batch=batch_size,
                     imgsz=img_size,
                     device=training_device,  # Specify device for training
-                    workers=0,               # MEMORY FIX: Single-threaded data loading
-                    cache=False,             # MEMORY FIX: Don't cache images in RAM
+                    workers=workers,         # OPTIMIZED: Parallel data loading
+                    cache=cache_setting,     # OPTIMIZED: RAM caching for small datasets
                     verbose=True,
                     project='runs/detect',
                     name='train'
                 )
+
+            except KeyboardInterrupt:
+                # IMMEDIATE CANCELLATION - User requested to stop training
+                training_cancelled = True
+                logger.info("=" * 60)
+                logger.info("TRAINING CANCELLED BY USER")
+                logger.info("Training stopped immediately (mid-epoch interruption)")
+                logger.info("=" * 60)
+
+                # Notify via progress callback
+                if progress_callback:
+                    progress_callback({
+                        'status': 'cancelled',
+                        'message': 'Training cancelled by user'
+                    })
+
+                # Return False to indicate training did not complete
+                return False
+
             except RuntimeError as e:
                 # Handle GPU out-of-memory or other runtime errors
                 if 'out of memory' in str(e).lower() or 'cuda' in str(e).lower():
@@ -1387,24 +1982,60 @@ class TrainingService:
                             'message': 'GPU training failed, retrying on CPU...'
                         })
 
-                    results = model.train(
-                        data=str(data_yaml),
-                        epochs=epochs,
-                        batch=batch_size,
-                        imgsz=img_size,
-                        device='cpu',
-                        workers=0,               # MEMORY FIX: Single-threaded data loading
-                        cache=False,             # MEMORY FIX: Don't cache images in RAM
-                        verbose=True,
-                        project='runs/detect',
-                        name='train'
-                    )
+                    try:
+                        results = model.train(
+                            data=str(data_yaml),
+                            epochs=epochs,
+                            batch=batch_size,
+                            imgsz=img_size,
+                            device='cpu',
+                            workers=workers,         # OPTIMIZED: Parallel data loading
+                            cache=cache_setting,     # OPTIMIZED: RAM caching for small datasets
+                            verbose=True,
+                            project='runs/detect',
+                            name='train'
+                        )
+                    except KeyboardInterrupt:
+                        # Cancellation during CPU retry
+                        training_cancelled = True
+                        logger.info("Training cancelled during CPU retry")
+                        if progress_callback:
+                            progress_callback({
+                                'status': 'cancelled',
+                                'message': 'Training cancelled by user'
+                            })
+                        return False
                 else:
                     raise
 
-            # Check if training was cancelled
+            finally:
+                # RESOURCE CLEANUP - Always execute, even on cancellation
+                logger.info("Performing resource cleanup...")
+
+                try:
+                    # Clear GPU cache if using CUDA
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        logger.info("GPU cache cleared")
+
+                    # Force garbage collection to free memory
+                    import gc
+                    gc.collect()
+                    logger.info("Garbage collection completed")
+
+                except Exception as cleanup_error:
+                    logger.warning(f"Error during resource cleanup: {cleanup_error}")
+
+                # Log cleanup completion
+                if training_cancelled:
+                    logger.info("Resource cleanup completed after cancellation")
+                else:
+                    logger.info("Resource cleanup completed after training")
+
+            # Check if training was cancelled (redundant check for safety)
             if cancellation_check and cancellation_check():
-                logger.info("Training was cancelled by user")
+                logger.info("Training was cancelled by user (post-training check)")
                 return False
 
             logger.info("Training completed successfully")
@@ -1550,6 +2181,9 @@ class TrainingService:
                             image=image,
                             label=obj_data['label'],
                             bbox=obj_data.get('bbox'),
+                            background_region=obj_data.get('background_region'),  # Load background region
+                            segmentation=obj_data.get('segmentation', []),  # Load segmentation points
+                            threshold=obj_data.get('threshold'),  # Load threshold value
                             object_id=obj_data['object_id']
                         )
                         self.objects.append(obj)

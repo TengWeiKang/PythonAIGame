@@ -9,6 +9,7 @@ import os
 import json
 import threading
 import logging
+import uuid
 from typing import Optional, Dict, Any, Callable, List
 from datetime import datetime
 
@@ -27,6 +28,7 @@ from app.ui.components.object_selector import ObjectSelector
 from app.ui.dialogs.comprehensive_settings_dialog import ComprehensiveSettingsDialog
 from app.ui.dialogs.training_progress_dialog import TrainingProgressDialog
 from app.ui.dialogs.object_naming_dialog import ObjectNamingDialog
+from app.ui.dialogs.bbox_drawing_dialog import BboxDrawingDialog, ImageSourceDialog
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -582,10 +584,11 @@ class MainWindow:
         self._objects_canvas.pack(fill='both', expand=True)
         self._objects_canvas.set_render_quality('medium')
         
-        # Initialize object selector
+        # Initialize object selector (DEPRECATED - now using BboxDrawingDialog)
+        # Kept for backward compatibility, but no longer actively used
         self._object_selector = ObjectSelector(
             self._objects_canvas,
-            self._on_object_selection_complete
+            lambda bbox: None  # Dummy callback, not used anymore
         )
         
         # Status label
@@ -692,185 +695,212 @@ class MainWindow:
         self._refresh_objects_list()
     
     def _build_chat_panel(self):
-        """Build the enhanced ChatBot conversation interface with modern UI."""
+        """Build the modern ChatBot interface with bubble-style messages."""
         panel = tk.Frame(bg=self.COLORS['bg_secondary'])
-        
+
         # Enhanced header with status indicators
-        header_frame = tk.Frame(panel, bg=self.COLORS['bg_tertiary'], height=45)
+        header_frame = tk.Frame(panel, bg=self.COLORS['bg_tertiary'], height=50)
         header_frame.pack(fill='x')
         header_frame.pack_propagate(False)
-        
+
         # Title and status
         title_frame = tk.Frame(header_frame, bg=self.COLORS['bg_tertiary'])
-        title_frame.pack(side='left', fill='y', padx=10, pady=5)
-        
+        title_frame.pack(side='left', fill='y', padx=15, pady=8)
+
         tk.Label(
             title_frame,
-            text="🤖 AI Analysis Chat",
+            text="AI Analysis Chat",
             bg=self.COLORS['bg_tertiary'],
             fg=self.COLORS['text_primary'],
-            font=('Segoe UI', 10, 'bold')
+            font=('Segoe UI', 11, 'bold')
         ).pack(anchor='w')
-        
+
         # Connection status indicator
         self._chat_status_label = tk.Label(
             title_frame,
             text="● Ready" if self._gemini_configured else "● Not Configured",
             bg=self.COLORS['bg_tertiary'],
             fg=self.COLORS['success'] if self._gemini_configured else self.COLORS['warning'],
-            font=('Segoe UI', 8)
+            font=('Segoe UI', 9)
         )
         self._chat_status_label.pack(anchor='w')
-        
+
         # Chat controls
         controls_frame = tk.Frame(header_frame, bg=self.COLORS['bg_tertiary'])
-        controls_frame.pack(side='right', fill='y', padx=10, pady=8)
-        
-        ttk.Button(
+        controls_frame.pack(side='right', fill='y', padx=15, pady=10)
+
+        clear_btn = tk.Button(
             controls_frame,
-            text="🧹",
-            style='Secondary.TButton',
+            text="Clear Chat",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 9),
+            borderwidth=0,
+            padx=12,
+            pady=6,
             command=self._clear_chat,
-            width=3
-        ).pack(side='right', padx=(5, 0))
-        
-        # Enhanced chat display area with custom scrollable frame
-        chat_frame = tk.Frame(panel, bg=self.COLORS['bg_primary'])
-        chat_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Create optimized chat canvas for smooth scrolling
-        self._chat_canvas = ChatCanvas(
-            chat_frame,
-            bg=self.COLORS['bg_primary'],
+            cursor='hand2',
+            relief='flat'
+        )
+        clear_btn.pack(side='right')
+
+        # Hover effects for clear button
+        def on_clear_enter(e):
+            clear_btn.configure(bg=self.COLORS['bg_primary'])
+
+        def on_clear_leave(e):
+            clear_btn.configure(bg=self.COLORS['bg_secondary'])
+
+        clear_btn.bind('<Enter>', on_clear_enter)
+        clear_btn.bind('<Leave>', on_clear_leave)
+
+        # Chat display area with modern bubble messages
+        chat_display_frame = tk.Frame(panel, bg='#2B2B2B')
+        chat_display_frame.pack(fill='both', expand=True, padx=0, pady=0)
+
+        # Create canvas for scrollable chat
+        self._chat_canvas = tk.Canvas(
+            chat_display_frame,
+            bg='#2B2B2B',
             highlightthickness=0,
             borderwidth=0
         )
-        # Enable virtual scrolling for performance with many messages
-        self._chat_canvas.enable_virtual_scrolling(True)
-        
+
         self._chat_scrollbar = ttk.Scrollbar(
-            chat_frame, 
-            orient='vertical', 
+            chat_display_frame,
+            orient='vertical',
             command=self._chat_canvas.yview
         )
         self._chat_canvas.configure(yscrollcommand=self._chat_scrollbar.set)
-        
+
         # Scrollable frame for messages
-        self._messages_frame = tk.Frame(self._chat_canvas, bg=self.COLORS['bg_primary'])
+        self._messages_frame = tk.Frame(self._chat_canvas, bg='#2B2B2B')
         self._messages_frame.bind(
             '<Configure>',
             lambda e: self._chat_canvas.configure(scrollregion=self._chat_canvas.bbox("all"))
         )
-        
-        # Bind canvas resize to update messages frame width for responsive design
+
+        # Bind canvas resize to update messages frame width
         def _on_canvas_configure(event):
-            # Update the messages frame width to match canvas width
             canvas_width = event.width
             self._chat_canvas.itemconfig(self._messages_canvas_window, width=canvas_width)
-            # Update scroll region
             self._chat_canvas.configure(scrollregion=self._chat_canvas.bbox("all"))
-        
+
         self._chat_canvas.bind('<Configure>', _on_canvas_configure)
-        
-        self._messages_canvas_window = self._chat_canvas.create_window((0, 0), window=self._messages_frame, anchor="nw")
-        
+
+        self._messages_canvas_window = self._chat_canvas.create_window(
+            (0, 0),
+            window=self._messages_frame,
+            anchor="nw"
+        )
+
         self._chat_canvas.pack(side="left", fill="both", expand=True)
         self._chat_scrollbar.pack(side="right", fill="y")
-        
+
         # Bind mouse wheel scrolling
         self._chat_canvas.bind('<MouseWheel>', self._on_chat_mousewheel)
         self._messages_frame.bind('<MouseWheel>', self._on_chat_mousewheel)
-        
-        # Enhanced input area with better styling
-        input_frame = tk.Frame(panel, bg=self.COLORS['bg_secondary'], height=120)
-        input_frame.pack(fill='x', padx=5, pady=(0, 5))
-        input_frame.pack_propagate(False)
-        
-        # Enhanced text input with send indicator
-        input_container = tk.Frame(input_frame, bg=self.COLORS['bg_secondary'])
-        input_container.pack(fill='x', pady=(8, 5))
-        
-        # Input field with modern styling
-        input_border = tk.Frame(input_container, bg=self.COLORS['accent_primary'], height=2)
-        input_border.pack(fill='x', pady=(0, 1))
-        
-        input_field_frame = tk.Frame(input_container, bg=self.COLORS['bg_tertiary'])
-        input_field_frame.pack(fill='x')
-        
-        # Frame for text input and scrollbar
-        text_input_frame = tk.Frame(input_field_frame, bg=self.COLORS['bg_tertiary'])
-        text_input_frame.pack(side='left', fill='both', expand=True)
+
+        # Modern input area
+        input_container = tk.Frame(panel, bg='#2D2D2D', height=100)
+        input_container.pack(fill='x', padx=0, pady=0)
+        input_container.pack_propagate(False)
+
+        # Separator line
+        separator = tk.Frame(input_container, bg='#404040', height=1)
+        separator.pack(fill='x')
+
+        # Input field container
+        input_field_container = tk.Frame(input_container, bg='#2D2D2D')
+        input_field_container.pack(fill='both', expand=True, padx=15, pady=12)
+
+        # Text input frame with border
+        text_input_border = tk.Frame(input_field_container, bg='#404040')
+        text_input_border.pack(side='left', fill='both', expand=True, padx=(0, 10))
+
+        text_input_inner = tk.Frame(text_input_border, bg='#252525')
+        text_input_inner.pack(fill='both', expand=True, padx=1, pady=1)
+
+        # Text input with scrollbar
+        text_scroll_frame = tk.Frame(text_input_inner, bg='#252525')
+        text_scroll_frame.pack(fill='both', expand=True)
 
         self._chat_input = tk.Text(
-            text_input_frame,
-            height=5,
-            bg=self.COLORS['bg_tertiary'],
-            fg=self.COLORS['text_primary'],
+            text_scroll_frame,
+            height=3,
+            bg='#252525',
+            fg='#E0E0E0',
             font=('Segoe UI', 10),
             borderwidth=0,
-            insertbackground=self.COLORS['text_primary'],
+            insertbackground='#E0E0E0',
             wrap=tk.WORD,
             padx=10,
-            pady=8
+            pady=8,
+            relief='flat'
         )
 
-        # Add scrollbar for chat input
         self._chat_input_scrollbar = ttk.Scrollbar(
-            text_input_frame,
+            text_scroll_frame,
             orient='vertical',
             command=self._chat_input.yview
         )
         self._chat_input.configure(yscrollcommand=self._chat_input_scrollbar.set)
 
-        # Pack text input and scrollbar
         self._chat_input.pack(side='left', fill='both', expand=True)
         self._chat_input_scrollbar.pack(side='right', fill='y')
 
-        # Bind events for chat input
+        # Focus border effect
+        def on_input_focus(e):
+            text_input_border.configure(bg=self.COLORS['accent_primary'])
+
+        def on_input_unfocus(e):
+            text_input_border.configure(bg='#404040')
+
+        self._chat_input.bind('<FocusIn>', on_input_focus)
+        self._chat_input.bind('<FocusOut>', on_input_unfocus)
+
+        # Bind events
         self._chat_input.bind('<Return>', self._on_chat_send_enhanced)
         self._chat_input.bind('<Shift-Return>', self._on_chat_newline)
         self._chat_input.bind('<KeyRelease>', self._on_chat_typing)
-
-        # Add mouse wheel support for chat input
         self._chat_input.bind('<MouseWheel>', self._on_chat_input_mousewheel)
-        
-        # Enhanced send button
-        send_frame = tk.Frame(input_field_frame, bg=self.COLORS['bg_tertiary'])
-        send_frame.pack(side='right', padx=(5, 10), pady=8)
-        
+
+        # Send button
         self._send_button = tk.Button(
-            send_frame,
-            text="➤",
+            input_field_container,
+            text="Send",
             bg=self.COLORS['accent_primary'],
-            fg=self.COLORS['text_primary'],
-            font=('Segoe UI', 12, 'bold'),
+            fg='#FFFFFF',
+            font=('Segoe UI', 10, 'bold'),
             borderwidth=0,
-            padx=12,
-            pady=6,
+            padx=24,
+            pady=10,
             command=self._on_chat_send_enhanced,
             cursor='hand2',
+            relief='flat',
             state='normal'
         )
-        self._send_button.pack()
-        
+        self._send_button.pack(side='right')
+
         # Send button hover effects
         def on_send_enter(e):
-            self._send_button.configure(bg=self.COLORS['accent_secondary'])
-        
+            if self._send_button['state'] == 'normal':
+                self._send_button.configure(bg=self.COLORS['accent_secondary'])
+
         def on_send_leave(e):
             self._send_button.configure(bg=self.COLORS['accent_primary'])
-        
+
         self._send_button.bind('<Enter>', on_send_enter)
         self._send_button.bind('<Leave>', on_send_leave)
-        
+
         # Initialize message state tracking
         self._message_widgets = []
         self._typing_indicator = None
         self._last_message_id = 0
-        
-        # Setup accessibility features
-        self.root.after(100, self._setup_chat_accessibility)
-        
+
+        # Add welcome message
+        self.root.after(100, self._add_welcome_message)
+
         return panel
     
     def _build_status_bar(self):
@@ -1062,8 +1092,13 @@ class MainWindow:
         try:
             self._detection_in_progress = True
 
+            # Log frame dimensions
+            h, w = frame.shape[:2]
+            logger.info(f"[LIVE DETECTION] Processing frame: {w}x{h}")
+
             # Run inference
             detections = self.inference_service.detect(frame)
+            logger.info(f"[LIVE DETECTION] Received {len(detections)} detections from inference service")
 
             # Draw detections and overlays
             annotated_frame = self._draw_live_detections(frame, detections)
@@ -1071,7 +1106,7 @@ class MainWindow:
             return annotated_frame
 
         except Exception as e:
-            logger.error(f"Error in live detection: {e}")
+            logger.error(f"Error in live detection: {e}", exc_info=True)
             return frame  # Return original frame on error
         finally:
             self._detection_in_progress = False
@@ -1087,17 +1122,43 @@ class MainWindow:
             Annotated frame with all visual elements
         """
         annotated_frame = frame.copy()
+        h, w = frame.shape[:2]
+
+        logger.info(f"[DRAW DETECTIONS] Drawing {len(detections)} detections on {w}x{h} frame")
 
         # Draw bounding boxes and labels for each detection
-        for detection in detections:
+        for idx, detection in enumerate(detections):
             bbox = detection.get('bbox')  # [x1, y1, x2, y2]
             label = detection.get('class_name', 'Unknown')
             confidence = detection.get('confidence', 0.0)
 
+            logger.info(f"[DRAW DETECTIONS] Detection {idx}: label='{label}', confidence={confidence:.3f}")
+            logger.info(f"[DRAW DETECTIONS] Detection {idx}: Raw bbox from detection dict: {bbox}")
+
             if bbox is None:
+                logger.warning(f"[DRAW DETECTIONS] Detection {idx}: Bbox is None, skipping")
                 continue
 
             x1, y1, x2, y2 = map(int, bbox)
+
+            logger.info(f"[DRAW DETECTIONS] Detection {idx}: Drawing bbox at ({x1},{y1})-({x2},{y2})")
+            logger.info(f"[DRAW DETECTIONS] Detection {idx}: Bbox size: {x2-x1}x{y2-y1} pixels")
+            logger.info(f"[DRAW DETECTIONS] Detection {idx}: Bbox size vs frame: "
+                      f"{(x2-x1)/w*100:.1f}% width x {(y2-y1)/h*100:.1f}% height")
+
+            # Validate bbox coordinates
+            if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+                logger.warning(f"[DRAW DETECTIONS] Detection {idx}: BBOX OUT OF BOUNDS! "
+                             f"({x1},{y1})-({x2},{y2}) for {w}x{h} frame")
+
+            if x2 <= x1 or y2 <= y1:
+                logger.error(f"[DRAW DETECTIONS] Detection {idx}: INVALID BBOX DIMENSIONS! "
+                           f"({x1},{y1})-({x2},{y2})")
+                continue
+
+            if (x2 - x1) > w * 0.8 or (y2 - y1) > h * 0.8:
+                logger.warning(f"[DRAW DETECTIONS] Detection {idx}: VERY LARGE BBOX! "
+                             f"Covers {(x2-x1)/w*100:.1f}% x {(y2-y1)/h*100:.1f}% of frame")
 
             # Get consistent color for this class
             color = self._get_class_color(label)
@@ -1134,6 +1195,8 @@ class MainWindow:
 
         # Draw status overlay
         annotated_frame = self._draw_detection_overlay(annotated_frame, detections)
+
+        logger.info(f"[DRAW DETECTIONS] Completed drawing all detections")
 
         return annotated_frame
 
@@ -1218,7 +1281,7 @@ class MainWindow:
             # Don't show error to user as this is a non-critical startup operation
 
     def _load_reference_image(self):
-        """Load reference image from file."""
+        """Load reference image from file and automatically set as default reference."""
         try:
             filepath = filedialog.askopenfilename(
                 title="Select Reference Image",
@@ -1228,9 +1291,16 @@ class MainWindow:
             if filepath:
                 if self.reference_manager.load_reference_from_file(filepath):
                     self._display_reference_image()
+
+                    # Auto-set as default reference
                     self.config['reference_image_path'] = filepath
                     self._save_config()
-                    self.status_label.config(text="Reference image loaded")
+                    logger.info(f"Reference image auto-set as default: {filepath}")
+
+                    # Update status with success indicator
+                    import os
+                    filename = os.path.basename(filepath)
+                    self.status_label.config(text=f"✓ Reference image loaded and set as default: {filename}")
                 else:
                     messagebox.showerror("Error", "Failed to load reference image")
 
@@ -1241,9 +1311,9 @@ class MainWindow:
     def _load_reference_from_stream(self):
         """Load reference image from current webcam stream frame.
 
-        This method captures the current frame from the video stream and sets it
-        as the reference image in memory and displays it in the reference canvas.
-        No files are saved to disk - the image is only loaded into memory.
+        This method captures the current frame from the video stream, saves it to disk,
+        and automatically sets it as the default reference image. The image is both
+        saved to the reference directory and displayed in the reference canvas.
         """
         try:
             # Check if camera is streaming
@@ -1264,14 +1334,21 @@ class MainWindow:
                 )
                 return
 
-            # Set frame as reference image (in memory only)
-            if self.reference_manager.set_reference_from_array(frame.copy(), save=False):
+            # Set frame as reference image and save to disk
+            if self.reference_manager.set_reference_from_array(frame.copy(), save=True):
                 # Display the reference image immediately
                 self._display_reference_image()
 
+                # Get the saved path and store in config (auto-set as default reference)
+                ref_info = self.reference_manager.get_reference_info()
+                if ref_info and ref_info.get('path'):
+                    self.config['reference_image_path'] = ref_info['path']
+                    self._save_config()
+                    logger.info(f"Reference image auto-set as default: {ref_info['path']}")
+
                 # Update status
-                self.status_label.config(text="Reference image loaded from stream")
-                logger.info("Reference image loaded from current video stream frame")
+                self.status_label.config(text="✓ Reference image captured and set as default")
+                logger.info("Reference image loaded from current video stream frame and saved")
             else:
                 messagebox.showerror(
                     "Failed to Load",
@@ -1316,131 +1393,292 @@ class MainWindow:
     # ========== OBJECTS TAB HANDLERS ==========
 
     def _capture_for_training(self):
-        """Capture current frame for training."""
+        """Capture frame with image source selection and annotate multiple objects.
+
+        NEW MULTI-OBJECT WORKFLOW:
+        1. User selects image source (video stream or reference image)
+        2. User draws multiple bboxes on full frame
+        3. User selects class for each object
+        4. Store all objects from single annotation session
+        """
         try:
-            if not self.webcam_service.is_streaming():
-                messagebox.showwarning("Warning", "Please start the webcam stream first")
+            # Check available image sources
+            has_video = self.webcam_service.is_streaming()
+            has_reference = self.reference_manager.has_reference()
+
+            if not has_video and not has_reference:
+                messagebox.showwarning(
+                    "No Image Source",
+                    "Please start the webcam stream or load a reference image first."
+                )
                 return
 
-            frame = self.webcam_service.capture_frame()
-            if frame is not None:
-                self._training_image = frame
-                self._objects_canvas.display_image(frame)
-                self.objects_status_label.config(text="Image captured. Click 'Select Object' to mark an object.")
-                self._object_selector.set_image(frame)
+            # Show image source selection dialog
+            source_dialog = ImageSourceDialog(
+                self.root,
+                has_video_stream=has_video,
+                has_reference=has_reference
+            )
+            source = source_dialog.show()
+
+            if not source:
+                return  # User cancelled
+
+            # Get image based on selected source
+            if source == 'video':
+                frame = self.webcam_service.capture_frame()
+                if frame is None:
+                    messagebox.showwarning("Warning", "No video frame available")
+                    return
+                source_name = "video stream"
+            elif source == 'reference':
+                frame = self.reference_manager.get_reference()
+                if frame is None:
+                    messagebox.showwarning("Warning", "No reference image loaded")
+                    return
+                source_name = "reference image"
             else:
-                messagebox.showwarning("Warning", "No frame available")
+                return
+
+            # Get existing classes for quick selection
+            existing_classes = list(set(obj.label for obj in self.training_service.get_all_objects()))
+
+            # Open multi-object bbox drawing dialog
+            dialog = BboxDrawingDialog(self.root, frame, existing_classes=existing_classes)
+            result = dialog.show()
+
+            if result and len(result) > 0:
+                # Result is now a list of objects with optional background region and segmentation
+                # Generate a single image_id for all objects from this capture
+                image_id = str(uuid.uuid4())
+
+                # Add all objects to training service with the same image_id
+                for obj_data in result:
+                    self.training_service.add_object(
+                        image=frame,  # FULL FRAME!
+                        label=obj_data['class'],
+                        bbox=obj_data['bbox'],  # Actual bbox coordinates
+                        background_region=obj_data.get('background_region'),  # Optional background for augmentation
+                        segmentation=obj_data.get('segmentation', []),  # YOLO segmentation points
+                        threshold=obj_data.get('threshold'),  # Threshold value used
+                        image_id=image_id  # NEW: Same ID for all objects from this image
+                    )
+
+                # Refresh UI
+                self._refresh_objects_list()
+                self.objects_status_label.config(
+                    text=f"✓ {len(result)} object(s) added from {source_name}"
+                )
+
+                # Display annotated frame with all bboxes
+                annotated_frame = frame.copy()
+                for obj_data in result:
+                    x1, y1, x2, y2 = obj_data['bbox']
+                    class_name = obj_data['class']
+
+                    # Draw bbox
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                    # Draw label with background
+                    cv2.putText(
+                        annotated_frame,
+                        class_name,
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2
+                    )
+
+                self._objects_canvas.display_image(annotated_frame)
+
+                logger.info(f"Added {len(result)} training objects from {source_name}")
 
         except Exception as e:
             logger.error(f"Error capturing for training: {e}")
             messagebox.showerror("Error", f"Failed to capture image: {e}")
 
     def _load_image_for_training(self):
-        """Load image from file for training."""
+        """Load image from file and annotate multiple objects."""
         try:
             filepath = filedialog.askopenfilename(
                 title="Select Image",
                 filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp"), ("All files", "*.*")]
             )
 
-            if filepath:
-                image = cv2.imread(filepath)
-                if image is not None:
-                    self._training_image = image
-                    self._objects_canvas.display_image(image)
-                    self.objects_status_label.config(text="Image loaded. Click 'Select Object' to mark an object.")
-                    self._object_selector.set_image(image)
-                else:
-                    messagebox.showerror("Error", "Failed to load image")
+            if not filepath:
+                return
+
+            image = cv2.imread(filepath)
+            if image is None:
+                messagebox.showerror("Error", "Failed to load image")
+                return
+
+            # Get existing classes for quick selection
+            existing_classes = list(set(obj.label for obj in self.training_service.get_all_objects()))
+
+            # Open multi-object bbox drawing dialog
+            dialog = BboxDrawingDialog(self.root, image, existing_classes=existing_classes)
+            result = dialog.show()
+
+            if result and len(result) > 0:
+                # Result is now a list of objects with optional background region and segmentation
+                # Generate a single image_id for all objects from this capture
+                image_id = str(uuid.uuid4())
+
+                # Add all objects to training service with the same image_id
+                for obj_data in result:
+                    self.training_service.add_object(
+                        image=image,  # FULL FRAME!
+                        label=obj_data['class'],
+                        bbox=obj_data['bbox'],  # Actual bbox coordinates
+                        background_region=obj_data.get('background_region'),  # Optional background for augmentation
+                        segmentation=obj_data.get('segmentation', []),  # YOLO segmentation points
+                        threshold=obj_data.get('threshold'),  # Threshold value used
+                        image_id=image_id  # NEW: Same ID for all objects from this image
+                    )
+
+                # Refresh UI
+                self._refresh_objects_list()
+                self.objects_status_label.config(
+                    text=f"✓ {len(result)} object(s) added from loaded image"
+                )
+
+                # Display annotated frame with all bboxes
+                annotated_frame = image.copy()
+                for obj_data in result:
+                    x1, y1, x2, y2 = obj_data['bbox']
+                    class_name = obj_data['class']
+
+                    # Draw bbox
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                    # Draw label
+                    cv2.putText(
+                        annotated_frame,
+                        class_name,
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2
+                    )
+
+                self._objects_canvas.display_image(annotated_frame)
+
+                logger.info(f"Added {len(result)} training objects from file: {filepath}")
 
         except Exception as e:
             logger.error(f"Error loading image: {e}")
             messagebox.showerror("Error", f"Failed to load image: {e}")
 
     def _start_object_selection(self):
-        """Start interactive object selection - enable selection on ALL canvases simultaneously.
+        """Start object selection with image source selection and multi-object support.
 
-        User can click and drag on ANY canvas (video stream, reference image, or objects canvas).
-        The first canvas that receives a mouse interaction becomes the active selection canvas.
+        NEW MULTI-OBJECT WORKFLOW:
+        1. User selects image source (video stream or reference image)
+        2. User draws multiple bboxes on full frame
+        3. User selects class for each object
+        4. Store all objects from single annotation session
         """
         try:
-            # Prepare all possible canvas sources with their images
-            canvas_sources = []
+            # Check available image sources
+            has_video = self.webcam_service.get_current_frame() is not None
+            has_reference = self.reference_manager.has_reference()
 
-            # Video stream canvas
-            frame = self.webcam_service.get_current_frame()
-            if frame is not None:
-                canvas_sources.append({
-                    'canvas': self._video_canvas,
-                    'image': frame,
-                    'name': 'video stream'
-                })
-
-            # Reference image canvas
-            ref_image = self.reference_manager.get_reference()
-            if ref_image is not None:
-                canvas_sources.append({
-                    'canvas': self._reference_canvas,
-                    'image': ref_image,
-                    'name': 'reference image'
-                })
-
-            # Objects canvas (if it has an image)
-            if self._training_image is not None:
-                canvas_sources.append({
-                    'canvas': self._objects_canvas,
-                    'image': self._training_image,
-                    'name': 'objects canvas'
-                })
-
-            # Check if any canvas has an image
-            if not canvas_sources:
+            if not has_video and not has_reference:
                 messagebox.showwarning(
-                    "No Images Available",
-                    "Please start the video stream, load a reference image, or capture/load an image in the Objects tab first."
+                    "No Image Source",
+                    "Please start the webcam stream or load a reference image first."
                 )
                 return
 
-            # Store canvas sources for cleanup
-            self._active_selectors = []
-            self._selection_active = True
-
-            # Callback wrapper to handle selection from any canvas
-            def on_any_canvas_selected(source_info, bbox):
-                """Called when user completes selection on any canvas."""
-                # Store the selected image for cropping
-                self._training_image = source_info['image']
-
-                # Clean up all selectors
-                self._cleanup_multi_canvas_selection()
-
-                # Process the selection
-                self._on_object_selection_complete(bbox)
-
-            # Enable object selection on ALL canvases simultaneously
-            for source in canvas_sources:
-                selector = ObjectSelector(
-                    source['canvas'],
-                    lambda bbox, s=source: on_any_canvas_selected(s, bbox)
-                )
-                selector.set_image(source['image'])
-                selector.activate()
-                self._active_selectors.append(selector)
-
-                # Add visual feedback (green border) to indicate ready for selection
-                source['canvas'].config(highlightthickness=3, highlightbackground='green')
-
-            # Update status with instructions
-            canvas_names = ', '.join([s['name'] for s in canvas_sources])
-            self.objects_status_label.config(
-                text=f"Draw a rectangle on ANY canvas ({canvas_names}) to select an object..."
+            # Show image source selection dialog
+            source_dialog = ImageSourceDialog(
+                self.root,
+                has_video_stream=has_video,
+                has_reference=has_reference
             )
+            source = source_dialog.show()
 
-            logger.info(f"Multi-canvas selection enabled on {len(canvas_sources)} canvases")
+            if not source:
+                return  # User cancelled
+
+            # Get image based on selected source
+            if source == 'video':
+                selected_image = self.webcam_service.get_current_frame()
+                if selected_image is None:
+                    messagebox.showwarning("Warning", "No video frame available")
+                    return
+                source_name = "video stream"
+            elif source == 'reference':
+                selected_image = self.reference_manager.get_reference()
+                if selected_image is None:
+                    messagebox.showwarning("Warning", "No reference image loaded")
+                    return
+                source_name = "reference image"
+            else:
+                return
+
+            logger.info(f"Opening bbox drawing dialog for {source_name}")
+
+            # Get existing classes for quick selection
+            existing_classes = list(set(obj.label for obj in self.training_service.get_all_objects()))
+
+            # Open multi-object bbox drawing dialog
+            dialog = BboxDrawingDialog(self.root, selected_image, existing_classes=existing_classes)
+            result = dialog.show()
+
+            if result and len(result) > 0:
+                # Result is now a list of objects with optional background region and segmentation
+                # Generate a single image_id for all objects from this capture
+                image_id = str(uuid.uuid4())
+
+                # Add all objects to training service with the same image_id
+                for obj_data in result:
+                    self.training_service.add_object(
+                        image=selected_image,  # FULL FRAME!
+                        label=obj_data['class'],
+                        bbox=obj_data['bbox'],  # Actual bbox coordinates
+                        background_region=obj_data.get('background_region'),  # Optional background for augmentation
+                        segmentation=obj_data.get('segmentation', []),  # YOLO segmentation points
+                        threshold=obj_data.get('threshold'),  # Threshold value used
+                        image_id=image_id  # NEW: Same ID for all objects from this image
+                    )
+
+                # Refresh UI
+                self._refresh_objects_list()
+                self.objects_status_label.config(
+                    text=f"✓ {len(result)} object(s) added from {source_name}"
+                )
+
+                # Display annotated frame with all bboxes
+                annotated_frame = selected_image.copy()
+                for obj_data in result:
+                    x1, y1, x2, y2 = obj_data['bbox']
+                    class_name = obj_data['class']
+
+                    # Draw bbox
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                    # Draw label
+                    cv2.putText(
+                        annotated_frame,
+                        class_name,
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2
+                    )
+
+                self._objects_canvas.display_image(annotated_frame)
+
+                logger.info(f"Added {len(result)} training objects from {source_name}")
 
         except Exception as e:
-            logger.error(f"Error starting selection: {e}")
-            messagebox.showerror("Error", f"Failed to start object selection: {e}")
+            logger.error(f"Error in object selection: {e}")
+            messagebox.showerror("Error", f"Failed to select object: {e}")
 
     def _cleanup_multi_canvas_selection(self):
         """Clean up all active canvas selectors and remove visual feedback."""
@@ -1455,53 +1693,10 @@ class MainWindow:
 
         self._selection_active = False
 
-    def _on_object_selection_complete(self, bbox: tuple):
-        """Handle object selection completion.
-
-        Args:
-            bbox: Bounding box in original image coordinates (x1, y1, x2, y2)
-                 Note: ObjectSelector automatically transforms canvas coords to image coords
-        """
-        try:
-            if self._training_image is None:
-                return
-
-            # Extract object from image using transformed coordinates
-            x1, y1, x2, y2 = map(int, bbox)
-            h, w = self._training_image.shape[:2]
-
-            # Clamp bbox coordinates to image bounds
-            x1 = max(0, min(x1, w - 1))
-            x2 = max(0, min(x2, w))
-            y1 = max(0, min(y1, h - 1))
-            y2 = max(0, min(y2, h))
-
-            # Ensure x2 > x1 and y2 > y1
-            if x2 <= x1 or y2 <= y1:
-                messagebox.showerror("Error", "Invalid selection: area too small")
-                return
-
-            # Crop object from original image
-            object_image = self._training_image[y1:y2, x1:x2]
-
-            if object_image.size == 0:
-                messagebox.showerror("Error", "Invalid selection: empty region")
-                return
-
-            # Show naming dialog
-            dialog = ObjectNamingDialog(self.root, object_image)
-            confirmed, label = dialog.show()
-
-            if confirmed and label:
-                # Add to training service with original image coordinates
-                self.training_service.add_object(object_image, label, bbox=(x1, y1, x2, y2))
-                self._refresh_objects_list()
-                self.objects_status_label.config(text=f"Object '{label}' added to training dataset")
-                logger.info(f"Training object added: {label} at bbox ({x1}, {y1}, {x2}, {y2})")
-
-        except Exception as e:
-            logger.error(f"Error completing selection: {e}")
-            messagebox.showerror("Error", f"Failed to add object: {e}")
+    # DEPRECATED: Old object selection method (replaced by BboxDrawingDialog)
+    # Kept for reference but no longer used
+    # The new workflow uses _capture_for_training, _load_image_for_training,
+    # and _start_object_selection methods instead
 
     def _refresh_objects_list(self):
         """Refresh the objects listbox."""
@@ -1575,7 +1770,10 @@ class MainWindow:
             logger.error(f"Error deleting object: {e}")
 
     def _view_selected_object(self):
-        """View selected object image in the Objects tab canvas."""
+        """View selected object image in the Objects tab canvas.
+
+        Displays the full frame with bbox annotation, not just the cropped object.
+        """
         try:
             selection = self._objects_listbox.curselection()
             if not selection:
@@ -1587,10 +1785,24 @@ class MainWindow:
 
             if idx < len(objects):
                 obj = objects[idx]
-                # Display in the Objects tab canvas
-                self._objects_canvas.display_image(obj.image)
-                self.objects_status_label.config(text=f"Viewing: {obj.label} ({obj.object_id})")
-                logger.info(f"Displaying object '{obj.label}' in Objects tab canvas")
+
+                # Display full frame with bbox annotation
+                annotated_frame = obj.image.copy()
+                x1, y1, x2, y2 = obj.bbox
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    annotated_frame,
+                    obj.label,
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2
+                )
+
+                self._objects_canvas.display_image(annotated_frame)
+                self.objects_status_label.config(text=f"Viewing: {obj.label} (full frame with bbox)")
+                logger.info(f"Displaying object '{obj.label}' with bbox annotation")
 
         except Exception as e:
             logger.error(f"Error viewing object: {e}")
@@ -1713,10 +1925,24 @@ class MainWindow:
 
             if idx < len(objects):
                 obj = objects[idx]
-                # Display in the Objects tab canvas
-                self._objects_canvas.display_image(obj.image)
-                self.objects_status_label.config(text=f"Viewing: {obj.label} ({obj.object_id})")
-                logger.info(f"Auto-displaying object '{obj.label}' via list click")
+
+                # Display full frame with bbox annotation
+                annotated_frame = obj.image.copy()
+                x1, y1, x2, y2 = obj.bbox
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    annotated_frame,
+                    obj.label,
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2
+                )
+
+                self._objects_canvas.display_image(annotated_frame)
+                self.objects_status_label.config(text=f"Viewing: {obj.label} (full frame with bbox)")
+                logger.info(f"Auto-displaying object '{obj.label}' with bbox annotation")
 
         except Exception as e:
             logger.error(f"Error displaying object from list click: {e}")
@@ -1760,6 +1986,9 @@ class MainWindow:
             message: User message text
         """
         try:
+            # Log user message
+            logger.info(f"User message: {message}")
+
             # Add user message to chat
             self._add_chat_message("User", message)
 
@@ -1774,9 +2003,12 @@ class MainWindow:
                 )
                 return
 
+            # Show typing indicator
+            self._show_typing_indicator()
+
             # Disable send button
             self._send_button.config(state='disabled')
-            self.status_label.config(text="Processing...")
+            self.status_label.config(text="AI is thinking...")
 
             def process_chat():
                 try:
@@ -1795,33 +2027,37 @@ class MainWindow:
                         # YOLO Detection Mode: Run YOLO on available images, send text results to Gemini
                         logger.info("Using YOLO Detection mode for analysis")
 
-                        # Build detection text
-                        detection_text_parts = []
+                        # Get class names from the model
+                        class_names = self.inference_service.get_class_names()
 
                         # Run YOLO on current frame if available
+                        frame_detections = None
+                        frame_width, frame_height = None, None
                         if frame is not None:
                             frame_detections = self.inference_service.detect(frame)
-                            if frame_detections:
-                                detection_text_parts.append(self._format_detections_as_text(frame_detections, "Current Frame"))
-                            else:
-                                detection_text_parts.append("Current Frame: No objects detected")
+                            frame_height, frame_width = frame.shape[:2]
 
                         # Run YOLO on reference image if available
+                        ref_detections = None
+                        ref_width, ref_height = None, None
                         if reference is not None:
                             ref_detections = self.inference_service.detect(reference)
-                            if ref_detections:
-                                detection_text_parts.append(self._format_detections_as_text(ref_detections, "Reference Image"))
-                            else:
-                                detection_text_parts.append("Reference Image: No objects detected")
+                            ref_height, ref_width = reference.shape[:2]
 
-                        # Build final prompt with detection results
-                        if detection_text_parts:
-                            enhanced_message = f"{message}\n\nYOLO Detection Results:\n" + "\n".join(detection_text_parts)
-                        else:
-                            enhanced_message = message
-
-                        # Send text-only to Gemini (no images)
-                        response = self.gemini_service.chat(enhanced_message)
+                        # ALWAYS use compare_with_text_only to show BOTH image sections
+                        # This ensures the prompt always displays both reference and video stream sections,
+                        # with "Status: Not provided" for any missing images
+                        response = self.gemini_service.compare_with_text_only(
+                            prompt=message,
+                            ref_detections=ref_detections,
+                            curr_detections=frame_detections,
+                            class_names=class_names,
+                            ref_width=ref_width,
+                            ref_height=ref_height,
+                            curr_width=frame_width,
+                            curr_height=frame_height,
+                            curr_is_video_frame=True  # Current frame is from webcam
+                        )
 
                     elif analysis_mode == 'gemini_auto':
                         # Gemini Auto-Analysis Mode: Send images directly to Gemini for vision analysis
@@ -1833,10 +2069,17 @@ class MainWindow:
                         logger.warning(f"Unknown analysis mode '{analysis_mode}', defaulting to gemini_auto")
                         response = self.gemini_service.chat_with_images(message, frame, reference)
 
+                    # Remove typing indicator
+                    self.root.after(0, self._remove_typing_indicator)
+
                     if response:
+                        # Log AI response
+                        logger.info(f"AI response: {response}")
                         self.root.after(0, lambda: self._add_chat_message("AI", response))
                         self.root.after(0, lambda: self.status_label.config(text="Response received"))
                     else:
+                        # Log empty response
+                        logger.warning("Empty response from Gemini API")
                         self.root.after(0, lambda: self._add_chat_message(
                             "System",
                             "Failed to get AI response. Please check your API key and connection."
@@ -1844,9 +2087,12 @@ class MainWindow:
 
                 except Exception as e:
                     logger.error(f"Error processing chat: {e}")
-                    self.root.after(0, lambda: self._add_chat_message(
+                    # Remove typing indicator on error
+                    error_msg = str(e)  # Capture error immediately to avoid scoping issues
+                    self.root.after(0, self._remove_typing_indicator)
+                    self.root.after(0, lambda msg=error_msg: self._add_chat_message(
                         "System",
-                        f"Error: {e}"
+                        f"Error: {msg}"
                     ))
 
                 finally:
@@ -1857,6 +2103,7 @@ class MainWindow:
 
         except Exception as e:
             logger.error(f"Error in send chat: {e}")
+            self._remove_typing_indicator()
             self._send_button.config(state='normal')
 
     def _format_detections_as_text(self, detections: List[Dict[str, Any]], image_label: str) -> str:
@@ -1882,60 +2129,239 @@ class MainWindow:
         items = [f"{class_name} ({count})" for class_name, count in sorted(class_counts.items())]
         return f"{image_label}: {', '.join(items)}"
 
+    def _parse_markdown(self, text: str) -> list:
+        """Parse markdown formatting in text and return list of (text, styles) tuples.
+
+        Supports:
+        - **bold** or __bold__
+        - *italic* or _italic_
+        - ~~strikethrough~~
+        - Combined styles (e.g., ***bold italic***)
+
+        Args:
+            text: Text with markdown formatting
+
+        Returns:
+            List of (text_segment, styles_set) tuples where styles_set contains
+            'bold', 'italic', 'strikethrough' as applicable
+        """
+        import re
+
+        # This will store our result segments
+        segments = []
+
+        # Pattern to match markdown syntax (order matters for nested styles)
+        # Matches: ***text***, **text**, __text__, *text*, _text_, ~~text~~
+        pattern = r'(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\*[^*]+\*|_[^_]+_)'
+
+        # Split text by markdown patterns while keeping the delimiters
+        parts = re.split(pattern, text)
+
+        for part in parts:
+            if not part:  # Skip empty strings
+                continue
+
+            styles = set()
+            plain_text = part
+
+            # Check for bold italic (***text***)
+            if part.startswith('***') and part.endswith('***') and len(part) > 6:
+                styles.add('bold')
+                styles.add('italic')
+                plain_text = part[3:-3]
+            # Check for bold (**text** or __text__)
+            elif (part.startswith('**') and part.endswith('**') and len(part) > 4) or \
+                 (part.startswith('__') and part.endswith('__') and len(part) > 4):
+                styles.add('bold')
+                plain_text = part[2:-2]
+            # Check for italic (*text* or _text_)
+            elif (part.startswith('*') and part.endswith('*') and len(part) > 2) or \
+                 (part.startswith('_') and part.endswith('_') and len(part) > 2):
+                styles.add('italic')
+                plain_text = part[1:-1]
+            # Check for strikethrough (~~text~~)
+            elif part.startswith('~~') and part.endswith('~~') and len(part) > 4:
+                styles.add('strikethrough')
+                plain_text = part[2:-2]
+
+            segments.append((plain_text, styles))
+
+        return segments if segments else [(text, set())]
+
     def _add_chat_message(self, sender: str, message: str):
-        """Add message to chat display with markdown formatting.
+        """Add modern bubble-style message to chat display.
 
         Args:
             sender: Message sender (User, AI, System)
-            message: Message text (supports markdown for AI messages)
+            message: Message text
         """
         try:
-            # Create message frame
-            msg_frame = tk.Frame(self._messages_frame, bg=self.COLORS['bg_primary'])
-            msg_frame.pack(fill='x', padx=10, pady=5)
+            from datetime import datetime
 
-            # Sender label
-            sender_color = {
-                'User': self.COLORS['accent_primary'],
-                'AI': self.COLORS['success'],
-                'System': self.COLORS['warning']
-            }.get(sender, self.COLORS['text_secondary'])
+            # Message container for proper alignment
+            msg_container = tk.Frame(self._messages_frame, bg='#2B2B2B')
+            msg_container.pack(fill='x', padx=15, pady=8)
 
-            sender_label = tk.Label(
-                msg_frame,
-                text=f"{sender}:",
-                bg=self.COLORS['bg_primary'],
-                fg=sender_color,
-                font=('Segoe UI', 9, 'bold')
+            # Determine message styling based on sender
+            if sender == "User":
+                # User messages - right aligned, dark blue background
+                bubble_bg = '#0E639C'
+                text_color = '#FFFFFF'
+                anchor_side = 'e'
+                max_width = 350
+            elif sender == "AI":
+                # AI messages - left aligned, dark gray background
+                bubble_bg = '#3C3C3C'
+                text_color = '#E0E0E0'
+                anchor_side = 'w'
+                max_width = 400
+            else:
+                # System messages - centered, dark orange/amber background
+                bubble_bg = '#8B6914'
+                text_color = '#FFFFFF'
+                anchor_side = 'center'
+                max_width = 400
+
+            # Create message bubble frame
+            if anchor_side == 'e':
+                bubble_frame = tk.Frame(msg_container, bg='#2B2B2B')
+                bubble_frame.pack(side='right')
+            elif anchor_side == 'center':
+                bubble_frame = tk.Frame(msg_container, bg='#2B2B2B')
+                bubble_frame.pack(anchor='center')
+            else:
+                bubble_frame = tk.Frame(msg_container, bg='#2B2B2B')
+                bubble_frame.pack(side='left')
+
+            # Sender name label (small, subtle)
+            if sender != "System":
+                sender_label = tk.Label(
+                    bubble_frame,
+                    text=sender,
+                    bg='#2B2B2B',
+                    fg='#999999',
+                    font=('Segoe UI', 8),
+                    anchor=anchor_side
+                )
+                sender_label.pack(anchor=anchor_side, padx=12, pady=(0, 2))
+
+            # Message bubble with shadow effect
+            bubble_shadow = tk.Frame(bubble_frame, bg='#1A1A1A')
+            bubble_shadow.pack()
+
+            bubble = tk.Frame(bubble_shadow, bg=bubble_bg)
+            bubble.pack(padx=1, pady=1)
+
+            # Message text - use Text widget for AI messages (supports markdown),
+            # Label for User/System messages (plain text)
+            if sender == "AI":
+                # Use Text widget for AI messages to support markdown formatting
+                message_text = tk.Text(
+                    bubble,
+                    bg=bubble_bg,
+                    fg=text_color,
+                    font=('Segoe UI', 10),
+                    wrap='word',
+                    width=45,  # Approximate width in characters
+                    borderwidth=0,
+                    highlightthickness=0,
+                    padx=15,
+                    pady=12,
+                    cursor='arrow',
+                    state='normal'
+                )
+
+                # Configure text tags for markdown styles
+                message_text.tag_config('bold', font=('Segoe UI', 10, 'bold'))
+                message_text.tag_config('italic', font=('Segoe UI', 10, 'italic'))
+                message_text.tag_config('bold_italic', font=('Segoe UI', 10, 'bold italic'))
+                message_text.tag_config('strikethrough', overstrike=True)
+
+                # Parse markdown and insert formatted text
+                segments = self._parse_markdown(message)
+                for text_segment, styles in segments:
+                    if not text_segment:
+                        continue
+
+                    # Determine which tag(s) to apply
+                    if 'bold' in styles and 'italic' in styles:
+                        message_text.insert('end', text_segment, 'bold_italic')
+                    elif 'bold' in styles:
+                        message_text.insert('end', text_segment, 'bold')
+                    elif 'italic' in styles:
+                        message_text.insert('end', text_segment, 'italic')
+                    elif 'strikethrough' in styles:
+                        message_text.insert('end', text_segment, 'strikethrough')
+                    else:
+                        message_text.insert('end', text_segment)
+
+                # Make text read-only
+                message_text.config(state='disabled')
+
+                # Pack the widget first so it can calculate wrapped dimensions
+                message_text.pack()
+
+                # Force update to calculate actual dimensions after packing
+                message_text.update_idletasks()
+
+                # Calculate required height based on DISPLAYED lines (accounts for wrapping)
+                # Count visible/wrapped lines by checking display line info
+                try:
+                    # Get the last visible line index
+                    last_index = message_text.index('end-1c')
+                    # Count display lines (wrapped lines) not just text lines
+                    display_line_count = 0
+                    current_index = '1.0'
+                    while message_text.compare(current_index, '<=', last_index):
+                        dline = message_text.dlineinfo(current_index)
+                        if dline is None:
+                            break
+                        display_line_count += 1
+                        # Move to next display line
+                        current_index = message_text.index(f'{current_index}+1 display lines')
+
+                    # Set height to actual display line count
+                    if display_line_count > 0:
+                        message_text.config(height=display_line_count)
+                except Exception as e:
+                    # Fallback: use text line count if display line calculation fails
+                    logger.warning(f"Could not calculate display lines, using text lines: {e}")
+                    line_count = int(message_text.index('end-1c').split('.')[0])
+                    message_text.config(height=line_count)
+            else:
+                # Use Label for User/System messages (no markdown parsing)
+                message_label = tk.Label(
+                    bubble,
+                    text=message,
+                    bg=bubble_bg,
+                    fg=text_color,
+                    font=('Segoe UI', 10),
+                    wraplength=max_width,
+                    justify='left',
+                    padx=15,
+                    pady=12,
+                    anchor='w'
+                )
+                message_label.pack()
+
+            # Timestamp (subtle)
+            timestamp = datetime.now().strftime("%H:%M")
+            time_label = tk.Label(
+                bubble_frame,
+                text=timestamp,
+                bg='#2B2B2B',
+                fg='#777777',
+                font=('Segoe UI', 7),
+                anchor=anchor_side
             )
-            sender_label.pack(anchor='w')
+            time_label.pack(anchor=anchor_side, padx=12, pady=(2, 0))
 
-            # Message display with markdown support (for AI messages)
-            message_text = tk.Text(
-                msg_frame,
-                bg=self.COLORS['bg_primary'],
-                fg=self.COLORS['text_primary'],
-                font=('Segoe UI', 9),
-                wrap='word',
-                width=50,
-                height=1,  # Will auto-adjust
-                borderwidth=0,
-                highlightthickness=0,
-                cursor="arrow",
-                state='normal'
-            )
-            message_text.pack(anchor='w', pady=(2, 0), fill='x')
-
-            # Insert plain text (markdown parsing disabled)
-            message_text.insert('1.0', message)
-
-            # Auto-adjust height based on content
-            message_text.configure(state='disabled')
-            message_text.configure(height=int(message_text.index('end-1c').split('.')[0]))
-
-            # Scroll to bottom
+            # Auto-scroll to bottom with smooth animation
             self._chat_canvas.update_idletasks()
             self._chat_canvas.yview_moveto(1.0)
+
+            # Store message widget for future reference
+            self._message_widgets.append(msg_container)
 
         except Exception as e:
             logger.error(f"Error adding chat message: {e}")
@@ -1993,13 +2419,107 @@ class MainWindow:
                 text_widget.insert('end', part[pos])
                 pos += 1
 
+    def _add_welcome_message(self):
+        """Add a welcome message to the chat on startup."""
+        try:
+            welcome_text = "Hello! I'm your AI assistant for image analysis. I can help you analyze live video frames, compare images, and detect objects. Start the webcam or load a reference image, then ask me questions!"
+            self._add_chat_message("AI", welcome_text)
+        except Exception as e:
+            logger.error(f"Error adding welcome message: {e}")
+
+    def _show_typing_indicator(self):
+        """Show typing indicator while AI is processing."""
+        try:
+            # Message container
+            msg_container = tk.Frame(self._messages_frame, bg='#2B2B2B')
+            msg_container.pack(fill='x', padx=15, pady=8)
+
+            # Bubble frame (left aligned for AI)
+            bubble_frame = tk.Frame(msg_container, bg='#2B2B2B')
+            bubble_frame.pack(side='left')
+
+            # Sender label
+            sender_label = tk.Label(
+                bubble_frame,
+                text="AI",
+                bg='#2B2B2B',
+                fg='#999999',
+                font=('Segoe UI', 8)
+            )
+            sender_label.pack(anchor='w', padx=12, pady=(0, 2))
+
+            # Typing bubble
+            bubble_shadow = tk.Frame(bubble_frame, bg='#1A1A1A')
+            bubble_shadow.pack()
+
+            bubble = tk.Frame(bubble_shadow, bg='#3C3C3C')
+            bubble.pack(padx=1, pady=1)
+
+            # Typing animation (three dots)
+            typing_label = tk.Label(
+                bubble,
+                text="●●●",
+                bg='#3C3C3C',
+                fg='#888888',
+                font=('Segoe UI', 10),
+                padx=20,
+                pady=12
+            )
+            typing_label.pack()
+
+            # Store reference to remove later
+            self._typing_indicator = msg_container
+
+            # Auto-scroll to bottom
+            self._chat_canvas.update_idletasks()
+            self._chat_canvas.yview_moveto(1.0)
+
+            # Animate typing indicator
+            self._animate_typing_indicator(typing_label, 0)
+
+        except Exception as e:
+            logger.error(f"Error showing typing indicator: {e}")
+
+    def _animate_typing_indicator(self, label, state):
+        """Animate the typing indicator dots.
+
+        Args:
+            label: The label widget to animate
+            state: Current animation state (0-2)
+        """
+        try:
+            if self._typing_indicator is None:
+                return  # Indicator was removed
+
+            animations = ["●○○", "●●○", "●●●"]
+            label.configure(text=animations[state % 3])
+
+            # Schedule next animation frame
+            self.root.after(400, lambda: self._animate_typing_indicator(label, state + 1))
+
+        except Exception as e:
+            logger.error(f"Error animating typing indicator: {e}")
+
+    def _remove_typing_indicator(self):
+        """Remove typing indicator from chat."""
+        try:
+            if self._typing_indicator:
+                self._typing_indicator.destroy()
+                self._typing_indicator = None
+        except Exception as e:
+            logger.error(f"Error removing typing indicator: {e}")
+
     def _clear_chat(self):
         """Clear all chat messages."""
         try:
             for widget in self._messages_frame.winfo_children():
                 widget.destroy()
 
+            self._message_widgets.clear()
             self.status_label.config(text="Chat cleared")
+
+            # Add welcome message again after clearing
+            self.root.after(100, self._add_welcome_message)
 
         except Exception as e:
             logger.error(f"Error clearing chat: {e}")
@@ -2011,10 +2531,6 @@ class MainWindow:
     def _on_chat_input_mousewheel(self, event):
         """Handle mouse wheel scrolling on chat input."""
         return None  # Allow default scrolling
-
-    def _setup_chat_accessibility(self):
-        """Setup accessibility features for chat."""
-        pass  # Placeholder for future accessibility features
 
     # ========== SETTINGS DIALOG ==========
 
@@ -2041,8 +2557,8 @@ class MainWindow:
             self.root.wait_window(dialog.dialog)
 
         except Exception as e:
-            logger.error(f"Error opening settings: {e}")
-            messagebox.showerror("Error", f"Failed to open settings: {e}")
+            logger.error(f"Error opening settings: {e}", exc_info=True)
+            messagebox.showerror("Error", f"Failed to open settings:\n{str(e)}")
 
     def _on_settings_apply(self, new_config: Dict[str, Any]):
         """Handle settings apply.

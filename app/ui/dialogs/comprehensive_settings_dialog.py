@@ -101,6 +101,8 @@ class ComprehensiveSettingsDialog:
         'warning': '#ff9800',
         'error': '#f44336',
         'border': '#404040',
+        'button_bg': '#3c3c3c',
+        'button_fg': '#ffffff',
     }
     
     def __init__(self, parent: tk.Tk, config: dict, services: Dict[str, Any],
@@ -247,6 +249,11 @@ class ComprehensiveSettingsDialog:
         self.video_codec_var = tk.StringVar(value=self.config.get('video_codec', 'Auto'))
 
         # Analysis settings
+        # Detection method: map from config value (yolo/opencv) to display value
+        detection_method_config = self.config.get('detection_method', 'yolo').lower()
+        detection_method_display = 'YOLO' if detection_method_config == 'yolo' else 'OpenCV Pattern Matching'
+        self.detection_method_var = tk.StringVar(value=detection_method_display)
+
         self.confidence_threshold_var = tk.DoubleVar(
             value=self.config.get('detection_confidence_threshold', 0.8)
         )
@@ -259,10 +266,16 @@ class ComprehensiveSettingsDialog:
             value=self.config.get('train_epochs', 50)
         )
         self.train_batch_size_var = tk.IntVar(
-            value=self.config.get('batch_size', 16)
+            value=self.config.get('batch_size', 4)  # Default to balanced option (4)
         )
         self.train_device_var = tk.StringVar(
             value=self.config.get('training_device', 'auto')
+        )
+        self.training_workers_var = tk.IntVar(
+            value=self.config.get('training_workers', 2)
+        )
+        self.training_cache_var = tk.StringVar(
+            value=str(self.config.get('training_cache', 'ram'))
         )
 
         # YOLO Model Selection - New granular controls
@@ -281,29 +294,13 @@ class ComprehensiveSettingsDialog:
         )
 
         # Data Augmentation settings
+        # NOTE: Augmentation now only supports rotation with intelligent background filling
         self.enable_augmentation_var = tk.BooleanVar(
             value=self.config.get('enable_augmentation', False)
         )
         self.augmentation_factor_var = tk.IntVar(
-            value=self.config.get('augmentation_factor', 3)
+            value=self.config.get('augmentation_factor', 5)
         )
-        # Individual augmentation type checkboxes
-        aug_types = self.config.get('augmentation_types', ['horizontal_flip', 'rotation', 'brightness'])
-        self.aug_horizontal_flip_var = tk.BooleanVar(value='horizontal_flip' in aug_types)
-        self.aug_vertical_flip_var = tk.BooleanVar(value='vertical_flip' in aug_types)
-        self.aug_rotation_var = tk.BooleanVar(value='rotation' in aug_types)
-        self.aug_scaling_var = tk.BooleanVar(value='scaling' in aug_types)
-        self.aug_translation_var = tk.BooleanVar(value='translation' in aug_types)
-        self.aug_brightness_var = tk.BooleanVar(value='brightness' in aug_types)
-        self.aug_contrast_var = tk.BooleanVar(value='contrast' in aug_types)
-        self.aug_saturation_var = tk.BooleanVar(value='saturation' in aug_types)
-        self.aug_hue_var = tk.BooleanVar(value='hue' in aug_types)
-        self.aug_gaussian_blur_var = tk.BooleanVar(value='gaussian_blur' in aug_types)
-        self.aug_motion_blur_var = tk.BooleanVar(value='motion_blur' in aug_types)
-        self.aug_gaussian_noise_var = tk.BooleanVar(value='gaussian_noise' in aug_types)
-        self.aug_salt_pepper_noise_var = tk.BooleanVar(value='salt_pepper_noise' in aug_types)
-        self.aug_sharpness_var = tk.BooleanVar(value='sharpness' in aug_types)
-        self.aug_edge_enhance_var = tk.BooleanVar(value='edge_enhance' in aug_types)
 
         # Chatbot settings
         self.analysis_mode_var = tk.StringVar(
@@ -345,6 +342,7 @@ class ComprehensiveSettingsDialog:
             'camera_index': self.camera_index_var.get(),
             'camera_device_name': self.camera_device_name_var.get(),
             'video_codec': self.video_codec_var.get(),
+            'detection_method': self.detection_method_var.get(),
             'confidence_threshold': self.confidence_threshold_var.get(),
             'iou_threshold': self.iou_threshold_var.get(),
             'train_epochs': self.train_epochs_var.get(),
@@ -361,24 +359,9 @@ class ComprehensiveSettingsDialog:
             'max_tokens': self.max_tokens_var.get(),
             'timeout': self.timeout_var.get(),
             'chatbot_persona': self.chatbot_persona_var.get(),
-            # Data Augmentation settings
+            # Data Augmentation settings (rotation only)
             'enable_augmentation': self.enable_augmentation_var.get(),
             'augmentation_factor': self.augmentation_factor_var.get(),
-            'aug_horizontal_flip': self.aug_horizontal_flip_var.get(),
-            'aug_vertical_flip': self.aug_vertical_flip_var.get(),
-            'aug_rotation': self.aug_rotation_var.get(),
-            'aug_scaling': self.aug_scaling_var.get(),
-            'aug_translation': self.aug_translation_var.get(),
-            'aug_brightness': self.aug_brightness_var.get(),
-            'aug_contrast': self.aug_contrast_var.get(),
-            'aug_saturation': self.aug_saturation_var.get(),
-            'aug_hue': self.aug_hue_var.get(),
-            'aug_gaussian_blur': self.aug_gaussian_blur_var.get(),
-            'aug_motion_blur': self.aug_motion_blur_var.get(),
-            'aug_gaussian_noise': self.aug_gaussian_noise_var.get(),
-            'aug_salt_pepper_noise': self.aug_salt_pepper_noise_var.get(),
-            'aug_sharpness': self.aug_sharpness_var.get(),
-            'aug_edge_enhance': self.aug_edge_enhance_var.get(),
         }
 
     def _setup_change_tracking(self):
@@ -387,19 +370,15 @@ class ComprehensiveSettingsDialog:
         variables = [
             self.language_var, self.data_dir_var, self.models_dir_var,
             self.results_dir_var, self.camera_index_var, self.camera_device_name_var,
-            self.video_codec_var, self.confidence_threshold_var, self.iou_threshold_var,
+            self.video_codec_var, self.detection_method_var,
+            self.confidence_threshold_var, self.iou_threshold_var,
             self.train_epochs_var, self.train_batch_size_var, self.train_device_var,
             self.model_architecture_var, self.yolo_version_var, self.yolo_size_var,
             self.debug_mode_var, self.analysis_mode_var,
             self.api_key_var, self.gemini_model_var, self.temperature_var, self.max_tokens_var,
             self.timeout_var, self.chatbot_persona_var,
-            # Augmentation variables
-            self.enable_augmentation_var, self.augmentation_factor_var,
-            self.aug_horizontal_flip_var, self.aug_vertical_flip_var, self.aug_rotation_var,
-            self.aug_scaling_var, self.aug_translation_var, self.aug_brightness_var,
-            self.aug_contrast_var, self.aug_saturation_var, self.aug_hue_var,
-            self.aug_gaussian_blur_var, self.aug_motion_blur_var, self.aug_gaussian_noise_var,
-            self.aug_salt_pepper_noise_var, self.aug_sharpness_var, self.aug_edge_enhance_var
+            # Augmentation variables (rotation only)
+            self.enable_augmentation_var, self.augmentation_factor_var
         ]
 
         for var in variables:
@@ -801,7 +780,35 @@ class ComprehensiveSettingsDialog:
         # Detection Settings Section
         detection_section, detection_content = self._create_section_frame(scrollable_frame, "🎯 Detection Settings")
         detection_section.pack(fill='x', pady=(0, 10))
-        
+
+        # Detection Method Selection
+        method_frame = tk.Frame(detection_content, bg=self.COLORS['bg_secondary'])
+        method_frame.pack(fill='x', pady=5)
+
+        tk.Label(method_frame, text="Detection Method:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        self.detection_method_combo = ttk.Combobox(
+            method_frame,
+            textvariable=self.detection_method_var,
+            values=['YOLO', 'OpenCV Pattern Matching'],
+            state='readonly',
+            width=25
+        )
+        self.detection_method_combo.pack(side='left', padx=(5, 0))
+
+        # Description for detection method
+        method_desc = tk.Label(
+            detection_content,
+            text="Choose detection algorithm: YOLO (deep learning, faster, better accuracy) or OpenCV Pattern Matching (classical CV, no GPU needed, good for exact object matching).",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        method_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
         # Confidence threshold
         conf_frame = tk.Frame(detection_content, bg=self.COLORS['bg_secondary'])
         conf_frame.pack(fill='x', pady=5)
@@ -878,28 +885,70 @@ class ComprehensiveSettingsDialog:
         )
         epochs_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
 
-        # Batch size dropdown
+        # Batch size dropdown with enhanced options
         batch_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
         batch_frame.pack(fill='x', pady=5)
 
         tk.Label(batch_frame, text="Batch Size:", bg=self.COLORS['bg_secondary'],
                 fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
 
-        batch_combo = ttk.Combobox(batch_frame, textvariable=self.train_batch_size_var,
-                                   values=[8, 16, 32, 64], state='readonly', width=10)
-        batch_combo.pack(side='left', padx=(5, 0))
+        # Expanded batch size options from 1 to 64
+        self.batch_combo = ttk.Combobox(batch_frame, textvariable=self.train_batch_size_var,
+                                   values=[1, 2, 4, 8, 16, 32, 64], state='readonly', width=10)
+        self.batch_combo.pack(side='left', padx=(5, 0))
 
-        # Description for batch size
-        batch_desc = tk.Label(
+        # Memory requirement label
+        self.batch_memory_label = tk.Label(
+            batch_frame,
+            text="",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8, 'italic')
+        )
+        self.batch_memory_label.pack(side='left', padx=(10, 0))
+
+        # Auto-detect button
+        auto_detect_btn = tk.Button(
+            batch_frame,
+            text="Auto-Detect",
+            bg=self.COLORS['button_bg'],
+            fg=self.COLORS['button_fg'],
+            font=('Segoe UI', 8),
+            relief='raised',
+            cursor='hand2',
+            command=self._apply_recommended_batch_size
+        )
+        auto_detect_btn.pack(side='left', padx=(10, 0))
+
+        # Dynamic description for batch size
+        self.batch_desc_label = tk.Label(
             training_content,
-            text="Number of images processed together. Larger batch = faster training but more memory. Recommended: 16 for most systems",
+            text="",
             bg=self.COLORS['bg_secondary'],
             fg=self.COLORS['text_muted'],
             font=('Segoe UI', 8),
             justify='left',
             wraplength=500
         )
-        batch_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+        self.batch_desc_label.pack(anchor='w', pady=(2, 0), padx=(0, 0))
+
+        # Static information
+        batch_info = tk.Label(
+            training_content,
+            text="Number of images processed together. Larger batch = faster training but more memory.",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        batch_info.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
+        # Bind batch size change event
+        self.batch_combo.bind('<<ComboboxSelected>>', self._on_batch_size_change)
+
+        # Initialize batch size display
+        self._on_batch_size_change()
 
         # YOLO Model Configuration Section Header
         model_config_label = tk.Label(
@@ -1028,6 +1077,62 @@ class ComprehensiveSettingsDialog:
         )
         device_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
 
+        # Performance Optimization Section Header
+        perf_config_label = tk.Label(
+            training_content,
+            text="Performance Optimization Settings",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['accent_primary'],
+            font=('Segoe UI', 10, 'bold')
+        )
+        perf_config_label.pack(anchor='w', pady=(10, 5))
+
+        # Workers dropdown
+        workers_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
+        workers_frame.pack(fill='x', pady=5)
+
+        tk.Label(workers_frame, text="Data Loading Workers:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        workers_combo = ttk.Combobox(workers_frame, textvariable=self.training_workers_var,
+                                     values=[0, 1, 2, 4], state='readonly', width=10)
+        workers_combo.pack(side='left', padx=(5, 0))
+
+        # Description for workers
+        workers_desc = tk.Label(
+            training_content,
+            text="Number of parallel threads for loading training data. More workers = better GPU utilization but more CPU/memory usage.\nRecommended: 2 for most systems (good balance), 0 only if memory errors occur, 4 for high-end systems",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        workers_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
+        # Cache mode dropdown
+        cache_frame = tk.Frame(training_content, bg=self.COLORS['bg_secondary'])
+        cache_frame.pack(fill='x', pady=5)
+
+        tk.Label(cache_frame, text="Dataset Caching:", bg=self.COLORS['bg_secondary'],
+                fg=self.COLORS['text_primary'], font=('Segoe UI', 9), width=20, anchor='w').pack(side='left')
+
+        cache_combo = ttk.Combobox(cache_frame, textvariable=self.training_cache_var,
+                                   values=['False', 'ram', 'disk', 'auto'], state='readonly', width=10)
+        cache_combo.pack(side='left', padx=(5, 0))
+
+        # Description for cache
+        cache_desc = tk.Label(
+            training_content,
+            text="Cache training images in memory for faster epochs (after first epoch).\n• False: No caching, load from disk every epoch (slowest but lowest memory)\n• ram: Cache in RAM (fastest, recommended for small datasets <500 images)\n• disk: Cache on disk (moderate speed, low memory)\n• auto: Automatically choose based on dataset size",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_muted'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
+        )
+        cache_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+
         # Data Augmentation Section
         augmentation_section, augmentation_content = self._create_section_frame(scrollable_frame, "🔄 Data Augmentation")
         augmentation_section.pack(fill='x', pady=(0, 10))
@@ -1081,122 +1186,41 @@ class ComprehensiveSettingsDialog:
             font=('Segoe UI', 8, 'italic')
         ).pack(side='left')
 
-        # Dataset calculation info
-        factor_info = tk.Label(
+        # Augmentation behavior note
+        behavior_note = tk.Label(
             augmentation_content,
-            text="📊 Example Calculation (10 images, factor=3, 2 deterministic + 2 stochastic methods):\n• Result = 10 original + (10 × 2×1) + (10 × 2×3) = 10 + 20 + 60 = 90 total images\n• Deterministic methods applied once, stochastic methods applied 3× with different random parameters",
+            text="Rotation Augmentation Behavior:\n• When enabled, full original images are rotated at multiple random angles\n• Each object generates N rotated versions based on the augmentation factor\n• Empty regions from rotation are filled with intelligent background colors\n• Example: Factor=5 means 1 original + 4 rotated versions = 5 images per object",
             bg=self.COLORS['bg_secondary'],
             fg=self.COLORS['accent_primary'],
             font=('Segoe UI', 8, 'italic'),
             justify='left',
             wraplength=500
         )
-        factor_info.pack(anchor='w', pady=(0, 10), padx=(0, 0))
+        behavior_note.pack(anchor='w', pady=(0, 10), padx=(0, 0))
 
-        # Augmentation types header
-        aug_types_label = tk.Label(
+        # Background filling explanation
+        bg_fill_note = tk.Label(
             augmentation_content,
-            text="Augmentation Types",
+            text="Background Filling:\n• When drawing objects, you can optionally select a background region\n• Rotation gaps will be filled with random colors sampled from that region\n• This creates more realistic augmented images compared to black or solid color fills\n• If no background region is selected, mean color from image borders is used",
             bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['accent_primary'],
-            font=('Segoe UI', 10, 'bold')
+            fg=self.COLORS['text_secondary'],
+            font=('Segoe UI', 8),
+            justify='left',
+            wraplength=500
         )
-        aug_types_label.pack(anchor='w', pady=(5, 5))
+        bg_fill_note.pack(anchor='w', pady=(0, 10), padx=(0, 0))
 
-        # Geometric Augmentations
-        geom_label = tk.Label(
+        # Recommended settings
+        recommendations_note = tk.Label(
             augmentation_content,
-            text="Geometric Transformations:",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_primary'],
-            font=('Segoe UI', 9, 'bold')
-        )
-        geom_label.pack(anchor='w', pady=(5, 2))
-
-        geom_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
-        geom_frame.pack(fill='x', pady=2)
-
-        self._create_checkbox(geom_frame, "Horizontal Flip (1×)", self.aug_horizontal_flip_var).pack(side='left', padx=(0, 15))
-        self._create_checkbox(geom_frame, "Vertical Flip (1×)", self.aug_vertical_flip_var).pack(side='left', padx=(0, 15))
-        self._create_checkbox(geom_frame, "Rotation ±30° (×N)", self.aug_rotation_var).pack(side='left', padx=(0, 15))
-
-        geom_frame2 = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
-        geom_frame2.pack(fill='x', pady=2)
-
-        self._create_checkbox(geom_frame2, "Scaling 0.8-1.2x (×N)", self.aug_scaling_var).pack(side='left', padx=(0, 15))
-        self._create_checkbox(geom_frame2, "Translation/Shift (×N)", self.aug_translation_var).pack(side='left', padx=(0, 15))
-
-        # Color/Brightness Augmentations
-        color_label = tk.Label(
-            augmentation_content,
-            text="Color & Lighting Adjustments:",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_primary'],
-            font=('Segoe UI', 9, 'bold')
-        )
-        color_label.pack(anchor='w', pady=(10, 2))
-
-        color_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
-        color_frame.pack(fill='x', pady=2)
-
-        self._create_checkbox(color_frame, "Brightness (×N)", self.aug_brightness_var).pack(side='left', padx=(0, 15))
-        self._create_checkbox(color_frame, "Contrast (×N)", self.aug_contrast_var).pack(side='left', padx=(0, 15))
-        self._create_checkbox(color_frame, "Saturation (×N)", self.aug_saturation_var).pack(side='left', padx=(0, 15))
-
-        color_frame2 = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
-        color_frame2.pack(fill='x', pady=2)
-
-        self._create_checkbox(color_frame2, "Hue Shift (×N)", self.aug_hue_var).pack(side='left', padx=(0, 15))
-
-        # Blur/Noise Augmentations
-        blur_label = tk.Label(
-            augmentation_content,
-            text="Blur & Noise Effects:",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_primary'],
-            font=('Segoe UI', 9, 'bold')
-        )
-        blur_label.pack(anchor='w', pady=(10, 2))
-
-        blur_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
-        blur_frame.pack(fill='x', pady=2)
-
-        self._create_checkbox(blur_frame, "Gaussian Blur (×N)", self.aug_gaussian_blur_var).pack(side='left', padx=(0, 15))
-        self._create_checkbox(blur_frame, "Motion Blur (×N)", self.aug_motion_blur_var).pack(side='left', padx=(0, 15))
-
-        blur_frame2 = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
-        blur_frame2.pack(fill='x', pady=2)
-
-        self._create_checkbox(blur_frame2, "Gaussian Noise (×N)", self.aug_gaussian_noise_var).pack(side='left', padx=(0, 15))
-        self._create_checkbox(blur_frame2, "Salt & Pepper Noise (×N)", self.aug_salt_pepper_noise_var).pack(side='left', padx=(0, 15))
-
-        # Sharpness/Detail Augmentations
-        sharp_label = tk.Label(
-            augmentation_content,
-            text="Sharpness & Detail Enhancement:",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_primary'],
-            font=('Segoe UI', 9, 'bold')
-        )
-        sharp_label.pack(anchor='w', pady=(10, 2))
-
-        sharp_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
-        sharp_frame.pack(fill='x', pady=2)
-
-        self._create_checkbox(sharp_frame, "Sharpness (×N)", self.aug_sharpness_var).pack(side='left', padx=(0, 15))
-        self._create_checkbox(sharp_frame, "Edge Enhancement (1×)", self.aug_edge_enhance_var).pack(side='left', padx=(0, 15))
-
-        # Recommended presets note
-        presets_note = tk.Label(
-            augmentation_content,
-            text="Recommended Presets:\n• Conservative (small datasets): Factor=3, Horizontal Flip (1×) + Rotation (3×) + Brightness (3×)\n• Moderate (medium datasets): Factor=5, add Vertical Flip (1×) + Scaling (5×) + Contrast (5×)\n• Aggressive (large datasets/overfitting): Factor=10, enable most augmentations\nNote: Deterministic methods (1×) always applied once; stochastic methods (×N) use the factor above.",
+            text="Recommended Settings:\n• Small datasets (5-10 objects): Factor=5-7 for good diversity\n• Medium datasets (10-20 objects): Factor=3-5 for balanced augmentation\n• Large datasets (20+ objects): Factor=2-3 to avoid excessive training time",
             bg=self.COLORS['bg_secondary'],
             fg=self.COLORS['warning'],
             font=('Segoe UI', 8, 'italic'),
             justify='left',
             wraplength=500
         )
-        presets_note.pack(anchor='w', pady=(10, 5), padx=(0, 0))
+        recommendations_note.pack(anchor='w', pady=(0, 5), padx=(0, 0))
 
         # Debug Settings Section
         debug_section, debug_content = self._create_section_frame(scrollable_frame, "🐛 Debug Mode")
@@ -1734,6 +1758,8 @@ class ComprehensiveSettingsDialog:
             self.train_epochs_var.get() != self.original_values['train_epochs'] or
             self.train_batch_size_var.get() != self.original_values['train_batch_size'] or
             self.train_device_var.get() != self.original_values['train_device'] or
+            self.training_workers_var.get() != self.original_values.get('training_workers', 2) or
+            self.training_cache_var.get() != str(self.original_values.get('training_cache', 'ram')) or
             self.model_architecture_var.get() != self.original_values['model_architecture'] or
             self.yolo_version_var.get() != self.original_values['yolo_version'] or
             self.yolo_size_var.get() != self.original_values['yolo_size'] or
@@ -1747,22 +1773,7 @@ class ComprehensiveSettingsDialog:
             self.chatbot_persona_var.get() != self.original_values['chatbot_persona'] or
             # Data Augmentation settings
             self.enable_augmentation_var.get() != self.original_values['enable_augmentation'] or
-            self.augmentation_factor_var.get() != self.original_values['augmentation_factor'] or
-            self.aug_horizontal_flip_var.get() != self.original_values['aug_horizontal_flip'] or
-            self.aug_vertical_flip_var.get() != self.original_values['aug_vertical_flip'] or
-            self.aug_rotation_var.get() != self.original_values['aug_rotation'] or
-            self.aug_scaling_var.get() != self.original_values['aug_scaling'] or
-            self.aug_translation_var.get() != self.original_values['aug_translation'] or
-            self.aug_brightness_var.get() != self.original_values['aug_brightness'] or
-            self.aug_contrast_var.get() != self.original_values['aug_contrast'] or
-            self.aug_saturation_var.get() != self.original_values['aug_saturation'] or
-            self.aug_hue_var.get() != self.original_values['aug_hue'] or
-            self.aug_gaussian_blur_var.get() != self.original_values['aug_gaussian_blur'] or
-            self.aug_motion_blur_var.get() != self.original_values['aug_motion_blur'] or
-            self.aug_gaussian_noise_var.get() != self.original_values['aug_gaussian_noise'] or
-            self.aug_salt_pepper_noise_var.get() != self.original_values['aug_salt_pepper_noise'] or
-            self.aug_sharpness_var.get() != self.original_values['aug_sharpness'] or
-            self.aug_edge_enhance_var.get() != self.original_values['aug_edge_enhance']
+            self.augmentation_factor_var.get() != self.original_values['augmentation_factor']
         )
 
         # Update state and UI
@@ -1839,6 +1850,12 @@ class ComprehensiveSettingsDialog:
         if not valid:
             return False, f"Training Batch Size: {msg}"
 
+        valid, msg = SettingsValidator.validate_positive_int(
+            self.training_workers_var.get(), min_val=0, max_val=8
+        )
+        if not valid:
+            return False, f"Training Workers: {msg}"
+
         # Validate API key if provided
         api_key = self.api_key_var.get().strip()
         if api_key:  # Only validate if not empty
@@ -1866,11 +1883,27 @@ class ComprehensiveSettingsDialog:
             self.config['last_webcam_index'] = self.camera_index_var.get()
             self.config['camera_device_name'] = self.camera_device_name_var.get()
             self.config['video_codec'] = self.video_codec_var.get()
+
+            # Save detection method: convert display value to config value
+            detection_method_display = self.detection_method_var.get()
+            detection_method_config = 'yolo' if detection_method_display == 'YOLO' else 'opencv'
+            self.config['detection_method'] = detection_method_config
+
             self.config['detection_confidence_threshold'] = self.confidence_threshold_var.get()
             self.config['detection_iou_threshold'] = self.iou_threshold_var.get()
             self.config['train_epochs'] = self.train_epochs_var.get()
-            self.config['batch_size'] = self.train_batch_size_var.get()
+
+            # Validate and warn about extreme batch sizes
+            batch_size = self.train_batch_size_var.get()
+            if not self._validate_batch_size_selection(batch_size):
+                return False  # User cancelled due to batch size warning
+
+            self.config['batch_size'] = batch_size
             self.config['training_device'] = self.train_device_var.get()
+            self.config['training_workers'] = self.training_workers_var.get()
+            # Convert cache setting: 'False' string to boolean False, otherwise keep as string
+            cache_value = self.training_cache_var.get()
+            self.config['training_cache'] = False if cache_value == 'False' else cache_value
 
             # Save YOLO model configuration
             self.config['yolo_version'] = self.yolo_version_var.get()
@@ -1888,43 +1921,13 @@ class ComprehensiveSettingsDialog:
             self.config['chatbot_persona'] = self.chatbot_persona_var.get()
 
             # Save Data Augmentation settings
+            # NOTE: Augmentation is now rotation-only with intelligent background filling
             self.config['enable_augmentation'] = self.enable_augmentation_var.get()
             self.config['augmentation_factor'] = self.augmentation_factor_var.get()
 
-            # Collect enabled augmentation types
-            augmentation_types = []
-            if self.aug_horizontal_flip_var.get():
-                augmentation_types.append('horizontal_flip')
-            if self.aug_vertical_flip_var.get():
-                augmentation_types.append('vertical_flip')
-            if self.aug_rotation_var.get():
-                augmentation_types.append('rotation')
-            if self.aug_scaling_var.get():
-                augmentation_types.append('scaling')
-            if self.aug_translation_var.get():
-                augmentation_types.append('translation')
-            if self.aug_brightness_var.get():
-                augmentation_types.append('brightness')
-            if self.aug_contrast_var.get():
-                augmentation_types.append('contrast')
-            if self.aug_saturation_var.get():
-                augmentation_types.append('saturation')
-            if self.aug_hue_var.get():
-                augmentation_types.append('hue')
-            if self.aug_gaussian_blur_var.get():
-                augmentation_types.append('gaussian_blur')
-            if self.aug_motion_blur_var.get():
-                augmentation_types.append('motion_blur')
-            if self.aug_gaussian_noise_var.get():
-                augmentation_types.append('gaussian_noise')
-            if self.aug_salt_pepper_noise_var.get():
-                augmentation_types.append('salt_pepper_noise')
-            if self.aug_sharpness_var.get():
-                augmentation_types.append('sharpness')
-            if self.aug_edge_enhance_var.get():
-                augmentation_types.append('edge_enhance')
-
-            self.config['augmentation_types'] = augmentation_types
+            # Augmentation type is always 'rotation' when enabled
+            # This simplifies the config and focuses on the new rotation-based approach
+            self.config['augmentation_types'] = ['rotation'] if self.enable_augmentation_var.get() else []
 
             # Save config to file
             self._save_config()
@@ -2392,3 +2395,193 @@ class ComprehensiveSettingsDialog:
                 text=f"Error: {str(e)}",
                 fg=self.COLORS['error']
             )
+
+    def _on_batch_size_change(self, event=None):
+        """Update batch size description and memory label when selection changes."""
+        try:
+            batch_size = int(self.train_batch_size_var.get())
+
+            # Batch size descriptions
+            descriptions = {
+                1: "Ultra-low memory (2GB VRAM) - Very slow but most stable",
+                2: "Low memory (2-4GB VRAM) - Slow but stable",
+                4: "Moderate memory (4-6GB VRAM) - Balanced (Recommended)",
+                8: "Good memory (6-8GB VRAM) - Fast",
+                16: "High memory (8-12GB VRAM) - Very fast",
+                32: "Very high memory (12-16GB VRAM) - Extremely fast",
+                64: "Enterprise GPUs (16+ GB VRAM) - Maximum performance"
+            }
+
+            # Memory requirements
+            memory_reqs = {
+                1: "~1-2 GB VRAM",
+                2: "~2-3 GB VRAM",
+                4: "~3-5 GB VRAM",
+                8: "~5-8 GB VRAM",
+                16: "~8-12 GB VRAM",
+                32: "~12-16 GB VRAM",
+                64: "~16+ GB VRAM"
+            }
+
+            # Update description label
+            description = descriptions.get(batch_size, "Custom batch size")
+            self.batch_desc_label.config(text=f"→ {description}")
+
+            # Update memory label
+            memory_req = memory_reqs.get(batch_size, "Unknown VRAM")
+            self.batch_memory_label.config(text=f"({memory_req})")
+
+            # Color code based on memory requirement
+            if batch_size <= 2:
+                color = "#90EE90"  # Light green - safe
+            elif batch_size <= 8:
+                color = "#FFD700"  # Gold - moderate
+            elif batch_size <= 16:
+                color = "#FFA500"  # Orange - high
+            else:
+                color = "#FF6347"  # Tomato red - very high
+
+            self.batch_memory_label.config(fg=color)
+
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Error updating batch size display: {e}")
+
+    def _get_recommended_batch_size(self) -> int:
+        """Get recommended batch size based on available GPU memory."""
+        try:
+            # Try to import device detection functions
+            from app.services.training_service import get_best_device, get_device_memory_info
+
+            device_str, device_name = get_best_device()
+
+            # Get memory info if available
+            memory_info = get_device_memory_info(device_str)
+
+            if memory_info and 'total_mb' in memory_info:
+                gpu_memory_mb = memory_info['total_mb']
+                gpu_memory_gb = gpu_memory_mb / 1024
+
+                # Recommend batch size based on available memory
+                if gpu_memory_gb < 3:
+                    return 1  # Very limited (< 3GB)
+                elif gpu_memory_gb < 5:
+                    return 2  # Limited (3-5GB)
+                elif gpu_memory_gb < 7:
+                    return 4  # Moderate (5-7GB) - default
+                elif gpu_memory_gb < 10:
+                    return 8  # Good (7-10GB)
+                elif gpu_memory_gb < 14:
+                    return 16  # High (10-14GB)
+                elif gpu_memory_gb < 18:
+                    return 32  # Very high (14-18GB)
+                else:
+                    return 64  # Enterprise (18+ GB)
+            else:
+                # CPU training or unknown device - use small batch
+                if device_str == 'cpu':
+                    return 2
+                else:
+                    return 4  # Safe default
+
+        except Exception as e:
+            logger.warning(f"Could not detect GPU memory for batch size recommendation: {e}")
+            return 4  # Safe default
+
+    def _apply_recommended_batch_size(self):
+        """Apply recommended batch size based on detected GPU memory."""
+        try:
+            recommended = self._get_recommended_batch_size()
+
+            # Get device info for display
+            try:
+                from app.services.training_service import get_best_device, get_device_memory_info
+                device_str, device_name = get_best_device()
+                memory_info = get_device_memory_info(device_str)
+
+                if memory_info and 'total_mb' in memory_info:
+                    gpu_memory_gb = memory_info['total_mb'] / 1024
+                    device_info = f"{device_name} ({gpu_memory_gb:.1f} GB)"
+                else:
+                    device_info = device_name
+            except:
+                device_info = "Unknown device"
+
+            # Show confirmation dialog
+            response = messagebox.showinfo(
+                "Recommended Batch Size",
+                f"Detected: {device_info}\n\n"
+                f"Recommended batch size: {recommended}\n\n"
+                f"This value has been applied. You can change it if needed.",
+                parent=self.dialog
+            )
+
+            # Apply the recommended value
+            self.train_batch_size_var.set(recommended)
+
+            # Trigger the update to show description
+            self._on_batch_size_change()
+
+            logger.info(f"Applied recommended batch size: {recommended} for {device_info}")
+
+        except Exception as e:
+            logger.error(f"Error applying recommended batch size: {e}")
+            messagebox.showerror(
+                "Error",
+                f"Could not detect optimal batch size: {str(e)}\n\n"
+                "Please select manually based on your GPU memory.",
+                parent=self.dialog
+            )
+
+    def _validate_batch_size_selection(self, batch_size: int) -> bool:
+        """Validate batch size selection and show warnings for extreme values.
+
+        Args:
+            batch_size: The selected batch size
+
+        Returns:
+            True if user accepts the value, False if user cancels
+        """
+        try:
+            batch_size = int(batch_size)
+
+            # Warn about batch size of 1
+            if batch_size == 1:
+                response = messagebox.askokcancel(
+                    "Batch Size Warning",
+                    "⚠️ Batch size of 1 is extremely slow but uses minimal memory.\n\n"
+                    "This is recommended ONLY if you have very limited GPU memory (< 2GB).\n\n"
+                    "Training will be significantly slower compared to larger batch sizes.\n\n"
+                    "Continue with batch size 1?",
+                    icon='warning',
+                    parent=self.dialog
+                )
+                if not response:
+                    logger.info("User cancelled batch size 1 selection")
+                    return False
+
+            # Warn about batch sizes 32 and above
+            elif batch_size >= 32:
+                memory_reqs = {
+                    32: "~12-16 GB VRAM",
+                    64: "~16+ GB VRAM"
+                }
+                memory_req = memory_reqs.get(batch_size, "16+ GB VRAM")
+
+                response = messagebox.askokcancel(
+                    "High Batch Size Warning",
+                    f"⚠️ Batch size of {batch_size} requires significant GPU memory ({memory_req}).\n\n"
+                    "This may cause out-of-memory (OOM) errors if your GPU doesn't have enough VRAM.\n\n"
+                    "If training fails with CUDA out of memory errors, try a smaller batch size.\n\n"
+                    f"Continue with batch size {batch_size}?",
+                    icon='warning',
+                    parent=self.dialog
+                )
+                if not response:
+                    logger.info(f"User cancelled batch size {batch_size} selection")
+                    return False
+
+            return True  # No warning needed or user accepted
+
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error validating batch size: {e}")
+            return True  # Allow to proceed

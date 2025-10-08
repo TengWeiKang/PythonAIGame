@@ -61,13 +61,15 @@ class GeminiService:
             return False
 
     def analyze_image(self, image: np.ndarray, prompt: str,
-                     detections: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                     detections: Optional[List[Dict[str, Any]]] = None,
+                     class_names: Optional[List[str]] = None) -> Optional[str]:
         """Analyze image with Gemini AI using the new google-genai library.
 
         Args:
             image: Image as numpy array (BGR format)
             prompt: Analysis prompt
             detections: Optional YOLO detections to include in context
+            class_names: Optional list of all available class names the model can detect
 
         Returns:
             AI response text, or None on failure
@@ -83,8 +85,17 @@ class GeminiService:
             # Convert to PIL Image
             pil_image = Image.fromarray(image_rgb)
 
-            # Enhance prompt with detections if provided
-            enhanced_prompt = self._build_prompt(prompt, detections)
+            # Get image resolution
+            image_height, image_width = image.shape[:2]
+
+            # Enhance prompt with detections, class names, and resolution
+            enhanced_prompt = self._build_prompt(
+                prompt,
+                detections=detections,
+                class_names=class_names,
+                image_width=image_width,
+                image_height=image_height
+            )
             logger.info(f"Sending prompt to Gemini API (analyze_image): {enhanced_prompt}")
 
             # Build config with system instruction
@@ -98,18 +109,31 @@ class GeminiService:
                 config=config
             )
 
+            # Check response validity with detailed diagnostics
             if response and response.text:
                 return response.text
             else:
-                logger.warning("Empty response from Gemini")
+                # Provide detailed diagnostic information
+                diagnostic_msg = self._diagnose_empty_response(response, "analyze_image")
+                logger.warning(diagnostic_msg)
+
+                # Check if it's a configuration issue
+                if self.max_tokens < 500:
+                    logger.error(f"max_tokens is very low ({self.max_tokens}). Recommended: 2048+. Increase in settings.")
+
                 return None
 
         except Exception as e:
-            logger.error(f"Error analyzing image: {e}")
+            logger.error(f"Error analyzing image: {e}", exc_info=True)
             return None
 
     def analyze_with_text_only(self, prompt: str,
-                               detections: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                               detections: Optional[List[Dict[str, Any]]] = None,
+                               class_names: Optional[List[str]] = None,
+                               image_width: Optional[int] = None,
+                               image_height: Optional[int] = None,
+                               is_video_frame: bool = False,
+                               is_reference: bool = False) -> Optional[str]:
         """Analyze using ONLY text prompt (no images sent to API).
 
         This method is used in yolo_detection mode where YOLO provides object
@@ -118,6 +142,11 @@ class GeminiService:
         Args:
             prompt: Analysis prompt
             detections: YOLO detections to include as text context
+            class_names: Optional list of all available class names the model can detect
+            image_width: Optional image width in pixels
+            image_height: Optional image height in pixels
+            is_video_frame: True if image is from live video stream/webcam
+            is_reference: True if image is a reference image
 
         Returns:
             AI response text, or None on failure
@@ -127,8 +156,16 @@ class GeminiService:
                 return None
 
         try:
-            # Build text-only prompt with detection results
-            enhanced_prompt = self._build_prompt(prompt, detections)
+            # Build text-only prompt with detection results, class names, and resolution
+            enhanced_prompt = self._build_prompt(
+                prompt,
+                detections=detections,
+                class_names=class_names,
+                image_width=image_width,
+                image_height=image_height,
+                is_video_frame=is_video_frame,
+                is_reference=is_reference
+            )
             logger.info(f"Sending prompt to Gemini API (analyze_with_text_only): {enhanced_prompt}")
 
             # Build config with system instruction
@@ -141,19 +178,28 @@ class GeminiService:
                 config=config
             )
 
+            # Check response validity with detailed diagnostics
             if response and response.text:
                 return response.text
             else:
-                logger.warning("Empty response from Gemini")
+                # Provide detailed diagnostic information
+                diagnostic_msg = self._diagnose_empty_response(response, "analyze_with_text_only")
+                logger.warning(diagnostic_msg)
+
+                # Check if it's a configuration issue
+                if self.max_tokens < 500:
+                    logger.error(f"max_tokens is very low ({self.max_tokens}). Recommended: 2048+. Increase in settings.")
+
                 return None
 
         except Exception as e:
-            logger.error(f"Error analyzing with text only: {e}")
+            logger.error(f"Error analyzing with text only: {e}", exc_info=True)
             return None
 
     def compare_images(self, reference_image: np.ndarray, current_image: np.ndarray,
                       prompt: str, ref_detections: Optional[List[Dict[str, Any]]] = None,
-                      curr_detections: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                      curr_detections: Optional[List[Dict[str, Any]]] = None,
+                      class_names: Optional[List[str]] = None) -> Optional[str]:
         """Compare two images with Gemini AI using the new google-genai library.
 
         Args:
@@ -162,6 +208,7 @@ class GeminiService:
             prompt: Comparison prompt
             ref_detections: Detections from reference image
             curr_detections: Detections from current image
+            class_names: Optional list of all available class names the model can detect
 
         Returns:
             AI response text, or None on failure
@@ -178,8 +225,21 @@ class GeminiService:
             ref_pil = Image.fromarray(ref_rgb)
             curr_pil = Image.fromarray(curr_rgb)
 
-            # Build enhanced prompt
-            enhanced_prompt = self._build_comparison_prompt(prompt, ref_detections, curr_detections)
+            # Get image resolutions
+            ref_height, ref_width = reference_image.shape[:2]
+            curr_height, curr_width = current_image.shape[:2]
+
+            # Build enhanced prompt with all metadata
+            enhanced_prompt = self._build_comparison_prompt(
+                prompt,
+                ref_detections=ref_detections,
+                curr_detections=curr_detections,
+                class_names=class_names,
+                ref_width=ref_width,
+                ref_height=ref_height,
+                curr_width=curr_width,
+                curr_height=curr_height
+            )
             logger.info(f"Sending prompt to Gemini API (compare_images): {enhanced_prompt}")
 
             # Build config with system instruction
@@ -198,19 +258,33 @@ class GeminiService:
                 config=config
             )
 
+            # Check response validity with detailed diagnostics
             if response and response.text:
                 return response.text
             else:
-                logger.warning("Empty response from Gemini")
+                # Provide detailed diagnostic information
+                diagnostic_msg = self._diagnose_empty_response(response, "compare_images")
+                logger.warning(diagnostic_msg)
+
+                # Check if it's a configuration issue
+                if self.max_tokens < 500:
+                    logger.error(f"max_tokens is very low ({self.max_tokens}). Recommended: 2048+. Increase in settings.")
+
                 return None
 
         except Exception as e:
-            logger.error(f"Error comparing images: {e}")
+            logger.error(f"Error comparing images: {e}", exc_info=True)
             return None
 
     def compare_with_text_only(self, prompt: str,
                                ref_detections: Optional[List[Dict[str, Any]]] = None,
-                               curr_detections: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                               curr_detections: Optional[List[Dict[str, Any]]] = None,
+                               class_names: Optional[List[str]] = None,
+                               ref_width: Optional[int] = None,
+                               ref_height: Optional[int] = None,
+                               curr_width: Optional[int] = None,
+                               curr_height: Optional[int] = None,
+                               curr_is_video_frame: bool = False) -> Optional[str]:
         """Compare using ONLY text prompt (no images sent to API).
 
         This method is used in yolo_detection mode where YOLO provides object
@@ -220,6 +294,12 @@ class GeminiService:
             prompt: Comparison prompt
             ref_detections: Reference image YOLO detections
             curr_detections: Current image YOLO detections
+            class_names: Optional list of all available class names the model can detect
+            ref_width: Reference image width in pixels
+            ref_height: Reference image height in pixels
+            curr_width: Current image width in pixels
+            curr_height: Current image height in pixels
+            curr_is_video_frame: True if current image is from live video stream/webcam
 
         Returns:
             AI response text, or None on failure
@@ -229,8 +309,18 @@ class GeminiService:
                 return None
 
         try:
-            # Build text-only comparison prompt with detection results
-            enhanced_prompt = self._build_comparison_prompt(prompt, ref_detections, curr_detections)
+            # Build text-only comparison prompt with all metadata
+            enhanced_prompt = self._build_comparison_prompt(
+                prompt,
+                ref_detections=ref_detections,
+                curr_detections=curr_detections,
+                class_names=class_names,
+                ref_width=ref_width,
+                ref_height=ref_height,
+                curr_width=curr_width,
+                curr_height=curr_height,
+                curr_is_video_frame=curr_is_video_frame
+            )
             logger.info(f"Sending prompt to Gemini API (compare_with_text_only): {enhanced_prompt}")
 
             # Build config with system instruction
@@ -243,14 +333,22 @@ class GeminiService:
                 config=config
             )
 
+            # Check response validity with detailed diagnostics
             if response and response.text:
                 return response.text
             else:
-                logger.warning("Empty response from Gemini")
+                # Provide detailed diagnostic information
+                diagnostic_msg = self._diagnose_empty_response(response, "compare_with_text_only")
+                logger.warning(diagnostic_msg)
+
+                # Check if it's a configuration issue
+                if self.max_tokens < 500:
+                    logger.error(f"max_tokens is very low ({self.max_tokens}). Recommended: 2048+. Increase in settings.")
+
                 return None
 
         except Exception as e:
-            logger.error(f"Error comparing with text only: {e}")
+            logger.error(f"Error comparing with text only: {e}", exc_info=True)
             return None
 
     def chat(self, message: str, context: Optional[List[Dict[str, str]]] = None) -> Optional[str]:
@@ -287,65 +385,185 @@ class GeminiService:
                     config=config
                 )
 
+            # Check response validity with detailed diagnostics
             if response and response.text:
                 return response.text
             else:
-                logger.warning("Empty response from Gemini")
+                # Provide detailed diagnostic information
+                diagnostic_msg = self._diagnose_empty_response(response, "chat")
+                logger.warning(diagnostic_msg)
+
+                # Check if it's a configuration issue
+                if self.max_tokens < 500:
+                    logger.error(f"max_tokens is very low ({self.max_tokens}). Recommended: 2048+. Increase in settings.")
+
                 return None
 
         except Exception as e:
-            logger.error(f"Error in chat: {e}")
+            logger.error(f"Error in chat: {e}", exc_info=True)
             return None
 
-    def _build_prompt(self, base_prompt: str, detections: Optional[List[Dict[str, Any]]]) -> str:
-        """Build enhanced prompt with detection information.
+    def _build_prompt(self, base_prompt: str, detections: Optional[List[Dict[str, Any]]] = None,
+                     class_names: Optional[List[str]] = None,
+                     image_width: Optional[int] = None,
+                     image_height: Optional[int] = None,
+                     is_video_frame: bool = False,
+                     is_reference: bool = False) -> str:
+        """Build enhanced prompt with detection information, class names, and image resolution.
+
+        ALWAYS includes image status section, even when image is not provided.
 
         Args:
             base_prompt: Base user prompt
-            detections: Optional detection results
+            detections: Optional detection results (None = no image, [] = no detections, [items] = detections)
+            class_names: Optional list of all available class names the model can detect
+            image_width: Optional image width in pixels
+            image_height: Optional image height in pixels
+            is_video_frame: True if image is from live video stream/webcam
+            is_reference: True if image is a reference image
 
         Returns:
             Enhanced prompt string (without persona - that's in system_instruction)
         """
-        # Add user's prompt
+        # Start with user's prompt
         enhanced = f"{base_prompt}\n\n"
 
-        # Add detection information if provided
-        if detections:
-            det_summary = self._format_detections(detections)
-            enhanced += "YOLO Detection Results:\n"
-            enhanced += det_summary
-            enhanced += "\n\nPlease analyze the image considering these detected objects."
+        # Add available class names if provided
+        if class_names and len(class_names) > 0:
+            enhanced += "Available Classes:\n"
+            for class_name in class_names:
+                enhanced += f"- {class_name}\n"
+            enhanced += "\n"
+
+        # Determine section header based on image source type
+        if is_video_frame:
+            section_header = "=== VIDEO STREAM IMAGE ==="
+        elif is_reference:
+            section_header = "=== REFERENCE IMAGE ==="
+        else:
+            section_header = "=== CURRENT IMAGE ==="
+
+        # ALWAYS include image status section
+        enhanced += f"{section_header}\n"
+
+        # Check if image is provided (dimensions or detections present)
+        has_image = (image_width is not None and image_height is not None) or (detections is not None)
+
+        if has_image:
+            # Image is provided - show resolution and detections
+            if image_width is not None and image_height is not None:
+                enhanced += f"Resolution: {image_width}x{image_height}\n"
+
+            # Add detection information
+            if detections is not None:
+                if len(detections) > 0:
+                    det_summary = self._format_detections(detections)
+                    enhanced += f"YOLO Detection Results ({len(detections)} object{'s' if len(detections) != 1 else ''} detected):\n"
+                    enhanced += det_summary
+                else:
+                    enhanced += "YOLO Detection Results: No objects detected.\n"
+
+            enhanced += "\nPlease analyze the image considering these detected objects."
+        else:
+            # Image is NOT provided
+            enhanced += "Status: Not provided\n"
+            enhanced += "\nNote: This is a text-only query without visual analysis.\n"
 
         return enhanced
 
     def _build_comparison_prompt(self, base_prompt: str,
-                                ref_detections: Optional[List[Dict[str, Any]]],
-                                curr_detections: Optional[List[Dict[str, Any]]]) -> str:
-        """Build comparison prompt with detection information.
+                                ref_detections: Optional[List[Dict[str, Any]]] = None,
+                                curr_detections: Optional[List[Dict[str, Any]]] = None,
+                                class_names: Optional[List[str]] = None,
+                                ref_width: Optional[int] = None,
+                                ref_height: Optional[int] = None,
+                                curr_width: Optional[int] = None,
+                                curr_height: Optional[int] = None,
+                                curr_is_video_frame: bool = False) -> str:
+        """Build comparison prompt with detection information, class names, and image resolutions.
+
+        ALWAYS includes both image status sections, even when images are not provided.
 
         Args:
             base_prompt: Base user prompt
-            ref_detections: Reference image detections
-            curr_detections: Current image detections
+            ref_detections: Reference image detections (None = no image, [] = no detections, [items] = detections)
+            curr_detections: Current image detections (None = no image, [] = no detections, [items] = detections)
+            class_names: Optional list of all available class names the model can detect
+            ref_width: Reference image width in pixels
+            ref_height: Reference image height in pixels
+            curr_width: Current image width in pixels
+            curr_height: Current image height in pixels
+            curr_is_video_frame: True if current image is from live video stream/webcam
 
         Returns:
             Enhanced prompt string (without persona - that's in system_instruction)
         """
-        # Add user's prompt
+        # Start with user's prompt
         enhanced = f"{base_prompt}\n\n"
 
-        if ref_detections:
-            enhanced += "Reference Image Detections:\n"
-            enhanced += self._format_detections(ref_detections)
+        # Add available class names if provided
+        if class_names and len(class_names) > 0:
+            enhanced += "Available Classes:\n"
+            for class_name in class_names:
+                enhanced += f"- {class_name}\n"
             enhanced += "\n"
 
-        if curr_detections:
-            enhanced += "Current Image Detections:\n"
-            enhanced += self._format_detections(curr_detections)
-            enhanced += "\n"
+        # ALWAYS include reference image section
+        enhanced += "=== REFERENCE IMAGE ===\n"
 
-        enhanced += "\nPlease compare these images and identify key differences."
+        # Check if reference image is provided
+        has_ref_image = (ref_width is not None and ref_height is not None) or (ref_detections is not None)
+
+        if has_ref_image:
+            # Reference image is provided - show resolution and detections
+            if ref_width is not None and ref_height is not None:
+                enhanced += f"Resolution: {ref_width}x{ref_height}\n"
+
+            # Add detections
+            if ref_detections is not None:
+                if len(ref_detections) > 0:
+                    det_summary = self._format_detections(ref_detections)
+                    enhanced += f"YOLO Detection Results ({len(ref_detections)} object{'s' if len(ref_detections) != 1 else ''} detected):\n"
+                    enhanced += det_summary
+                else:
+                    enhanced += "YOLO Detection Results: No objects detected.\n"
+            enhanced += "\n"
+        else:
+            # Reference image is NOT provided
+            enhanced += "Status: Not provided\n\n"
+
+        # Current image section - use appropriate header based on source
+        curr_section_header = "=== VIDEO STREAM IMAGE ===" if curr_is_video_frame else "=== CURRENT IMAGE ==="
+        enhanced += f"{curr_section_header}\n"
+
+        # Check if current image is provided
+        has_curr_image = (curr_width is not None and curr_height is not None) or (curr_detections is not None)
+
+        if has_curr_image:
+            # Current image is provided - show resolution and detections
+            if curr_width is not None and curr_height is not None:
+                enhanced += f"Resolution: {curr_width}x{curr_height}\n"
+
+            # Add detections
+            if curr_detections is not None:
+                if len(curr_detections) > 0:
+                    det_summary = self._format_detections(curr_detections)
+                    enhanced += f"YOLO Detection Results ({len(curr_detections)} object{'s' if len(curr_detections) != 1 else ''} detected):\n"
+                    enhanced += det_summary
+                else:
+                    enhanced += "YOLO Detection Results: No objects detected.\n"
+            enhanced += "\n"
+        else:
+            # Current image is NOT provided
+            enhanced += "Status: Not provided\n\n"
+
+        # Add appropriate closing message based on image availability
+        if has_ref_image and has_curr_image:
+            enhanced += "Please compare these images and identify key differences."
+        elif has_ref_image or has_curr_image:
+            enhanced += "Please analyze the available image data."
+        else:
+            enhanced += "Note: This is a text-only query without visual analysis.\n"
 
         return enhanced
 
@@ -362,12 +580,13 @@ class GeminiService:
                 temperature=self.temperature,
                 max_output_tokens=self.max_tokens,
                 response_mime_type="text/plain",
-                safety_settings=[
-                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                ]
+                thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+                # safety_settings=[
+                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
+                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
+                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
+                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
+                # ]
             )
         else:
             # Return config without system instruction
@@ -375,39 +594,152 @@ class GeminiService:
                 temperature=self.temperature,
                 max_output_tokens=self.max_tokens,
                 response_mime_type="text/plain",
-                safety_settings=[
-                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                ]
+                thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+                # safety_settings=[
+                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
+                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
+                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
+                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
+                # ]
             )
 
     def _format_detections(self, detections: List[Dict[str, Any]]) -> str:
-        """Format detections as readable text.
+        """Format detections as comprehensive readable text with full details.
 
         Args:
-            detections: List of detection dictionaries
+            detections: List of detection dictionaries with keys:
+                - class_name: Object class name
+                - confidence: Detection confidence (0-1)
+                - bbox: Bounding box [x1, y1, x2, y2] in pixels
+                - class_id: Class ID number
 
         Returns:
-            Formatted string
+            Formatted string with detailed detection information
         """
         if not detections:
             return "No objects detected."
 
-        # Count objects by class
-        class_counts = {}
-        for det in detections:
-            class_name = det['class_name']
-            class_counts[class_name] = class_counts.get(class_name, 0) + 1
-
-        # Format summary
         lines = []
-        lines.append(f"Total objects detected: {len(detections)}")
-        for class_name, count in sorted(class_counts.items()):
-            lines.append(f"- {class_name}: {count}")
+
+        for idx, det in enumerate(detections, 1):
+            class_name = det.get('class_name', 'Unknown')
+            confidence = det.get('confidence', 0.0)
+            bbox = det.get('bbox', [0, 0, 0, 0])
+
+            # Extract bbox coordinates
+            x1, y1, x2, y2 = bbox
+
+            # Calculate center and size
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            width = x2 - x1
+            height = y2 - y1
+
+            # Format detection entry
+            lines.append(f"{idx}. Object: {class_name}")
+            lines.append(f"   - Bounding Box: ({x1}, {y1}, {x2}, {y2}) pixels")
+            lines.append(f"   - Confidence: {confidence:.2f}")
+            lines.append(f"   - Position: Center at ({center_x:.0f}, {center_y:.0f})")
+            lines.append(f"   - Size: {width:.0f}x{height:.0f} pixels")
+            lines.append("")  # Blank line between detections
 
         return "\n".join(lines)
+
+    def _diagnose_empty_response(self, response, method_name: str) -> str:
+        """Diagnose why a Gemini response is empty and return detailed diagnostic message.
+
+        Args:
+            response: The GenerateContentResponse object
+            method_name: Name of the calling method for context
+
+        Returns:
+            Detailed diagnostic message explaining why response is empty
+        """
+        diagnostics = []
+
+        # Check if response object exists
+        if not response:
+            return f"[{method_name}] Response object is None or False"
+
+        # Check prompt feedback for blocking
+        if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
+            diagnostics.append(f"Prompt feedback present: {response.prompt_feedback}")
+
+            # Check for blocked prompt
+            if hasattr(response.prompt_feedback, 'block_reason'):
+                block_reason = response.prompt_feedback.block_reason
+                if block_reason:
+                    diagnostics.append(f"PROMPT BLOCKED - Reason: {block_reason}")
+
+            # Check safety ratings on prompt
+            if hasattr(response.prompt_feedback, 'safety_ratings'):
+                safety_ratings = response.prompt_feedback.safety_ratings
+                if safety_ratings:
+                    diagnostics.append(f"Prompt safety ratings: {safety_ratings}")
+
+        # Check candidates
+        if not hasattr(response, 'candidates') or not response.candidates:
+            diagnostics.append("No candidates in response (candidates is None or empty list)")
+            return f"[{method_name}] Empty response - " + "; ".join(diagnostics)
+
+        # Analyze first candidate
+        candidate = response.candidates[0]
+        diagnostics.append(f"Number of candidates: {len(response.candidates)}")
+
+        # Check finish reason
+        if hasattr(candidate, 'finish_reason'):
+            finish_reason = candidate.finish_reason
+            diagnostics.append(f"Finish reason: {finish_reason}")
+
+            # Map finish reasons to explanations
+            finish_reason_explanations = {
+                'SAFETY': 'Response blocked by safety filters',
+                'MAX_TOKENS': 'Response truncated due to token limit (increase max_tokens)',
+                'RECITATION': 'Response blocked due to recitation concerns',
+                'OTHER': 'Response stopped for other reasons',
+                'STOP': 'Normal completion',
+            }
+
+            finish_reason_str = str(finish_reason).split('.')[-1] if hasattr(finish_reason, 'name') else str(finish_reason)
+            if finish_reason_str in finish_reason_explanations:
+                diagnostics.append(f"Explanation: {finish_reason_explanations[finish_reason_str]}")
+
+        # Check safety ratings on candidate
+        if hasattr(candidate, 'safety_ratings') and candidate.safety_ratings:
+            diagnostics.append(f"Candidate safety ratings: {candidate.safety_ratings}")
+
+        # Check finish message
+        if hasattr(candidate, 'finish_message') and candidate.finish_message:
+            diagnostics.append(f"Finish message: {candidate.finish_message}")
+
+        # Check content structure
+        if not hasattr(candidate, 'content') or not candidate.content:
+            diagnostics.append("Candidate has no content")
+        elif not hasattr(candidate.content, 'parts') or not candidate.content.parts:
+            diagnostics.append("Candidate content has no parts")
+        else:
+            # Check what types of parts exist
+            parts_info = []
+            for part in candidate.content.parts:
+                part_dump = part.model_dump(exclude_none=True)
+                non_none_fields = [k for k, v in part_dump.items() if v is not None]
+                parts_info.append(f"Part fields: {non_none_fields}")
+
+            diagnostics.append(f"Content parts ({len(candidate.content.parts)}): {'; '.join(parts_info)}")
+
+        # Check response.text property
+        try:
+            text_value = response.text
+            if text_value is None:
+                diagnostics.append("response.text returned None (no text parts found)")
+            elif text_value == '':
+                diagnostics.append("response.text returned empty string")
+            else:
+                diagnostics.append(f"response.text has value but condition failed (length: {len(text_value)})")
+        except Exception as e:
+            diagnostics.append(f"Error accessing response.text: {e}")
+
+        return f"[{method_name}] Empty response - " + "; ".join(diagnostics)
 
     def chat_with_images(self, message: str, frame: Optional[np.ndarray] = None,
                         reference: Optional[np.ndarray] = None) -> Optional[str]:
@@ -459,14 +791,22 @@ class GeminiService:
                 config=config
             )
 
+            # Check response validity with detailed diagnostics
             if response and response.text:
                 return response.text
             else:
-                logger.warning("Empty response from Gemini")
+                # Provide detailed diagnostic information
+                diagnostic_msg = self._diagnose_empty_response(response, "chat_with_images")
+                logger.warning(diagnostic_msg)
+
+                # Check if it's a configuration issue
+                if self.max_tokens < 500:
+                    logger.error(f"max_tokens is very low ({self.max_tokens}). Recommended: 2048+. Increase in settings.")
+
                 return None
 
         except Exception as e:
-            logger.error(f"Error in chat_with_images: {e}")
+            logger.error(f"Error in chat_with_images: {e}", exc_info=True)
             return None
 
     def is_initialized(self) -> bool:

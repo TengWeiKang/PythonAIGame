@@ -1,7 +1,7 @@
 """Training progress dialog with real-time updates."""
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import threading
 from typing import Optional, Callable, Dict, Any
 import logging
@@ -277,8 +277,29 @@ class TrainingProgressDialog:
                     self.map50_label.config(text=f"{metrics['mAP50']:.4f}")
 
                 # Handle special status updates
-                if 'status' in metrics and metrics['status'] == 'training_started':
-                    self.update_status("Training started...")
+                if 'status' in metrics:
+                    status = metrics['status']
+
+                    if status == 'training_started':
+                        self.update_status("Training started...")
+
+                    elif status == 'cancelled':
+                        # Training was cancelled
+                        message = metrics.get('message', 'Training cancelled by user')
+                        self.update_status(f"Cancelled: {message}")
+
+                        # Stop progress bar animation
+                        try:
+                            self.progress_bar.stop()
+                        except Exception:
+                            pass
+
+                        logger.info(f"Status update: {message}")
+
+                    elif status == 'error':
+                        # Training error occurred
+                        message = metrics.get('message', 'Training error occurred')
+                        self.update_status(f"Error: {message}")
 
             except Exception as e:
                 logger.error(f"Error updating metrics: {e}")
@@ -317,16 +338,56 @@ class TrainingProgressDialog:
             logger.error(f"Error scheduling completion: {e}")
 
     def _on_cancel(self):
-        """Handle cancel button click."""
+        """Handle cancel button click with confirmation and immediate feedback."""
         if self._training_complete:
             # Training is complete, just close the dialog
             self.dialog.destroy()
-        else:
-            # Training is still running, request cancellation
-            self._cancelled = True
-            self.cancel_button.config(state='disabled')
-            self.update_status("Cancelling training... Please wait.")
-            logger.info("User requested training cancellation")
+            return
+
+        # Prevent multiple cancel requests
+        if self._cancelled:
+            logger.debug("Cancel already requested, ignoring duplicate click")
+            return
+
+        # Show confirmation dialog
+        response = messagebox.askyesno(
+            "Cancel Training",
+            "Are you sure you want to cancel training?\n\n"
+            "Training will stop immediately, and progress will be lost.\n"
+            "Partial model from the last completed epoch may be saved.",
+            icon='warning',
+            parent=self.dialog
+        )
+
+        if not response:
+            # User changed their mind
+            logger.info("User cancelled the cancellation request")
+            return
+
+        # User confirmed cancellation - set flag and provide immediate feedback
+        logger.info("=" * 60)
+        logger.info("USER CONFIRMED TRAINING CANCELLATION")
+        logger.info("Requesting immediate stop via cancellation flag...")
+        logger.info("=" * 60)
+
+        self._cancelled = True
+
+        # IMMEDIATE UI FEEDBACK
+        # 1. Update status label
+        self.update_status("Cancelling training... Stopping immediately...")
+
+        # 2. Disable cancel button to prevent multiple clicks
+        self.cancel_button.config(state='disabled', text="Cancelling...")
+
+        # 3. Switch progress bar to indeterminate mode to show activity
+        try:
+            self.progress_bar.stop()  # Stop any current animation
+            self.progress_bar.config(mode='indeterminate')
+            self.progress_bar.start(10)  # Start indeterminate animation
+        except Exception as e:
+            logger.warning(f"Could not update progress bar during cancellation: {e}")
+
+        logger.info("UI updated with cancellation feedback, waiting for training to stop...")
 
     def _on_window_close(self):
         """Handle window close event (X button)."""

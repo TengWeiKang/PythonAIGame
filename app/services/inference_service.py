@@ -97,7 +97,7 @@ class InferenceService:
 
             # Get original image dimensions
             original_height, original_width = image.shape[:2]
-            logger.debug(f"Original image size: {original_width}x{original_height}")
+            logger.info(f"[INFERENCE] Input image size: {original_width}x{original_height}")
 
             # Calculate resize parameters if image exceeds max_size
             if original_height > max_size or original_width > max_size:
@@ -112,21 +112,23 @@ class InferenceService:
                 scale_x = original_width / new_width
                 scale_y = original_height / new_height
 
-                logger.debug(f"Resized image to: {new_width}x{new_height} (scale_x={scale_x:.3f}, scale_y={scale_y:.3f})")
+                logger.info(f"[INFERENCE] Image resized for inference: {new_width}x{new_height}")
+                logger.info(f"[INFERENCE] Scale factors: scale_x={scale_x:.6f}, scale_y={scale_y:.6f}")
             else:
                 # No resize needed - image already within limits
                 resized_image = image
                 scale_x = 1.0
                 scale_y = 1.0
-                logger.debug("No resize needed - image within size limits")
+                logger.info(f"[INFERENCE] No resize needed - image within {max_size}x{max_size} limits")
 
             # Run inference on resized image
+            logger.info(f"[INFERENCE] Running YOLO inference with conf={self.confidence_threshold}, iou={self.iou_threshold}")
             results = self._model(
                 resized_image,
                 conf=self.confidence_threshold,
                 iou=self.iou_threshold,
                 max_det=100,
-                verbose=True
+                verbose=False  # Changed to False to reduce noise
             )
 
             # Parse results and scale coordinates back to original image size
@@ -139,9 +141,15 @@ class InferenceService:
                     confidences = result.boxes.conf.cpu().numpy()
                     class_ids = result.boxes.cls.cpu().numpy().astype(int)
 
-                    for box, conf, cls_id in zip(boxes, confidences, class_ids):
+                    logger.info(f"[INFERENCE] YOLO returned {len(boxes)} detections")
+
+                    for idx, (box, conf, cls_id) in enumerate(zip(boxes, confidences, class_ids)):
                         # Get bounding box coordinates from resized image
                         x1, y1, x2, y2 = box
+
+                        logger.info(f"[INFERENCE] Detection {idx}: Raw YOLO bbox (on resized image): "
+                                  f"x1={x1:.2f}, y1={y1:.2f}, x2={x2:.2f}, y2={y2:.2f}")
+                        logger.info(f"[INFERENCE] Detection {idx}: Raw bbox size: {x2-x1:.2f}x{y2-y1:.2f} pixels")
 
                         # Scale coordinates back to original image size
                         x1_original = int(x1 * scale_x)
@@ -149,26 +157,56 @@ class InferenceService:
                         x2_original = int(x2 * scale_x)
                         y2_original = int(y2 * scale_y)
 
+                        logger.info(f"[INFERENCE] Detection {idx}: Scaled bbox (before clamping): "
+                                  f"x1={x1_original}, y1={y1_original}, x2={x2_original}, y2={y2_original}")
+                        logger.info(f"[INFERENCE] Detection {idx}: Scaled bbox size: {x2_original-x1_original}x{y2_original-y1_original} pixels")
+
                         # Ensure coordinates are within image bounds
-                        x1_original = max(0, min(x1_original, original_width))
-                        y1_original = max(0, min(y1_original, original_height))
-                        x2_original = max(0, min(x2_original, original_width))
-                        y2_original = max(0, min(y2_original, original_height))
+                        x1_clamped = max(0, min(x1_original, original_width))
+                        y1_clamped = max(0, min(y1_original, original_height))
+                        x2_clamped = max(0, min(x2_original, original_width))
+                        y2_clamped = max(0, min(y2_original, original_height))
+
+                        # Check if clamping changed coordinates
+                        if (x1_clamped != x1_original or y1_clamped != y1_original or
+                            x2_clamped != x2_original or y2_clamped != y2_original):
+                            logger.warning(f"[INFERENCE] Detection {idx}: Bbox clamped to image bounds! "
+                                        f"Original: ({x1_original},{y1_original})-({x2_original},{y2_original}), "
+                                        f"Clamped: ({x1_clamped},{y1_clamped})-({x2_clamped},{y2_clamped})")
+
+                        # Calculate bbox size as percentage of image
+                        bbox_width_pct = ((x2_clamped - x1_clamped) / original_width) * 100
+                        bbox_height_pct = ((y2_clamped - y1_clamped) / original_height) * 100
+
+                        logger.info(f"[INFERENCE] Detection {idx}: Bbox size relative to original image: "
+                                  f"{bbox_width_pct:.1f}% width x {bbox_height_pct:.1f}% height")
+
+                        # Get class name
+                        class_name = result.names[cls_id]
 
                         detection = {
-                            'class_name': result.names[cls_id],
+                            'class_name': class_name,
                             'confidence': float(conf),
-                            'bbox': [x1_original, y1_original, x2_original, y2_original],
+                            'bbox': [x1_clamped, y1_clamped, x2_clamped, y2_clamped],
                             'class_id': int(cls_id)
                         }
                         detections.append(detection)
 
-                    logger.debug(f"Detected {len(detections)} objects with coordinates scaled to original size")
+                        logger.info(f"[INFERENCE] Detection {idx}: Final detection: "
+                                  f"class='{class_name}', conf={conf:.3f}, "
+                                  f"bbox=[{x1_clamped}, {y1_clamped}, {x2_clamped}, {y2_clamped}]")
+
+                    logger.info(f"[INFERENCE] Total detections returned: {len(detections)}")
+                else:
+                    logger.info(f"[INFERENCE] No objects detected (empty boxes)")
+
+            else:
+                logger.info(f"[INFERENCE] No results from YOLO model")
 
             return detections
 
         except Exception as e:
-            logger.error(f"Error during detection: {e}")
+            logger.error(f"Error during detection: {e}", exc_info=True)
             return []
 
     def detect_with_visualization(self, image: np.ndarray) -> tuple[np.ndarray, List[Dict[str, Any]]]:
@@ -239,3 +277,25 @@ class InferenceService:
             self.confidence_threshold = max(0.0, min(1.0, confidence))
         if iou is not None:
             self.iou_threshold = max(0.0, min(1.0, iou))
+
+    def get_class_names(self) -> List[str]:
+        """Get list of all class names that the model can detect.
+
+        Returns:
+            List of class names, or empty list if model not loaded
+        """
+        if not self._model_loaded or self._model is None:
+            logger.warning("Model not loaded, cannot get class names")
+            return []
+
+        try:
+            # Access the model's class names dictionary
+            # result.names is a dict like {0: 'person', 1: 'bicycle', ...}
+            names_dict = self._model.names
+            # Return sorted list of class names by class ID
+            class_names = [names_dict[i] for i in sorted(names_dict.keys())]
+            logger.info(f"Retrieved {len(class_names)} class names from model")
+            return class_names
+        except Exception as e:
+            logger.error(f"Error getting class names: {e}")
+            return []
