@@ -1694,8 +1694,15 @@ class MainWindow:
             messagebox.showerror("Error", f"Failed to capture image: {e}")
 
     def _load_image_for_training(self):
-        """Load image from file and annotate multiple objects."""
+        """Load and display an image file to the canvas.
+
+        This method ONLY loads and displays the image - no automatic
+        detection, processing, dialog opening, or object addition.
+
+        Use the "Select Object" button after loading to annotate objects.
+        """
         try:
+            # Open file dialog to select image
             filepath = filedialog.askopenfilename(
                 title="Select Image",
                 filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp"), ("All files", "*.*")]
@@ -1704,67 +1711,24 @@ class MainWindow:
             if not filepath:
                 return
 
+            # Load image from file
             image = cv2.imread(filepath)
             if image is None:
                 messagebox.showerror("Error", "Failed to load image")
                 return
 
-            # Get existing classes for quick selection
-            existing_classes = list(set(obj.label for obj in self.training_service.get_all_objects()))
+            # Display the raw image on canvas (no annotations, no processing)
+            self._objects_canvas.display_image(image)
 
-            # Open multi-object bbox drawing dialog
-            dialog = BboxDrawingDialog(self.root, image, existing_classes=existing_classes)
-            result = dialog.show()
+            # Update status to indicate image is loaded and ready
+            self.objects_status_label.config(
+                text=f"✓ Image loaded: {filepath.split('/')[-1]} - Use 'Select Object' to annotate"
+            )
 
-            if result and len(result) > 0:
-                # Result is now a list of objects with optional background region and segmentation
-                # Generate a single image_id for all objects from this capture
-                image_id = str(uuid.uuid4())
-
-                # Add all objects to training service with the same image_id
-                for obj_data in result:
-                    self.training_service.add_object(
-                        image=image,  # FULL FRAME!
-                        label=obj_data['class'],
-                        bbox=obj_data['bbox'],  # Actual bbox coordinates
-                        background_region=obj_data.get('background_region'),  # Optional background for augmentation
-                        segmentation=obj_data.get('segmentation', []),  # YOLO segmentation points
-                        threshold=obj_data.get('threshold'),  # Threshold value used
-                        image_id=image_id  # NEW: Same ID for all objects from this image
-                    )
-
-                # Refresh UI
-                self._refresh_objects_list()
-                self.objects_status_label.config(
-                    text=f"✓ {len(result)} object(s) added from loaded image"
-                )
-
-                # Display annotated frame with all bboxes
-                annotated_frame = image.copy()
-                for obj_data in result:
-                    x1, y1, x2, y2 = obj_data['bbox']
-                    class_name = obj_data['class']
-
-                    # Draw bbox
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-                    # Draw label
-                    cv2.putText(
-                        annotated_frame,
-                        class_name,
-                        (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (0, 255, 0),
-                        2
-                    )
-
-                self._objects_canvas.display_image(annotated_frame)
-
-                logger.info(f"Added {len(result)} training objects from file: {filepath}")
+            logger.info(f"Image loaded for display: {filepath}")
 
         except Exception as e:
-            logger.error(f"Error loading image: {e}")
+            logger.error(f"Error loading image: {e}", exc_info=True)
             messagebox.showerror("Error", f"Failed to load image: {e}")
 
     def _start_object_selection(self):
