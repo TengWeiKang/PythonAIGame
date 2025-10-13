@@ -425,8 +425,11 @@ class GeminiService:
         Returns:
             Enhanced prompt string (without persona - that's in system_instruction)
         """
-        # Start with user's prompt
+        # Start with user's prompt (authoritative instruction comes first)
         enhanced = f"{base_prompt}\n\n"
+
+        # Wrap all detection/reference data with label
+        enhanced += "=== REFERENCE MATERIALS ===\n\n"
 
         # Add available class names if provided
         if class_names and len(class_names) > 0:
@@ -437,11 +440,11 @@ class GeminiService:
 
         # Determine section header based on image source type
         if is_video_frame:
-            section_header = "=== VIDEO STREAM IMAGE ==="
+            section_header = "__VIDEO STREAM IMAGE__"
         elif is_reference:
-            section_header = "=== REFERENCE IMAGE ==="
+            section_header = "__REFERENCE IMAGE__"
         else:
-            section_header = "=== CURRENT IMAGE ==="
+            section_header = "__CURRENT IMAGE__"
 
         # ALWAYS include image status section
         enhanced += f"{section_header}\n"
@@ -498,8 +501,11 @@ class GeminiService:
         Returns:
             Enhanced prompt string (without persona - that's in system_instruction)
         """
-        # Start with user's prompt
+        # Start with user's prompt (authoritative instruction comes first)
         enhanced = f"{base_prompt}\n\n"
+
+        # Wrap all detection/reference data with label
+        enhanced += "=== REFERENCE MATERIALS ===\n\n"
 
         # Add available class names if provided
         if class_names and len(class_names) > 0:
@@ -509,7 +515,7 @@ class GeminiService:
             enhanced += "\n"
 
         # ALWAYS include reference image section
-        enhanced += "=== REFERENCE IMAGE ===\n"
+        enhanced += "__REFERENCE IMAGE__\n"
 
         # Check if reference image is provided
         has_ref_image = (ref_width is not None and ref_height is not None) or (ref_detections is not None)
@@ -533,7 +539,7 @@ class GeminiService:
             enhanced += "Status: Not provided\n\n"
 
         # Current image section - use appropriate header based on source
-        curr_section_header = "=== VIDEO STREAM IMAGE ===" if curr_is_video_frame else "=== CURRENT IMAGE ==="
+        curr_section_header = "__VIDEO STREAM IMAGE__" if curr_is_video_frame else "__CURRENT IMAGE__"
         enhanced += f"{curr_section_header}\n"
 
         # Check if current image is provided
@@ -573,10 +579,24 @@ class GeminiService:
         Returns:
             GenerateContentConfig object with system_instruction if persona exists
         """
-        if self.persona and self.persona.strip():
-            # Create config with persona as system instruction
+        # Build enhanced persona with reference materials instructions
+        enhanced_persona = self.persona if self.persona and self.persona.strip() else ""
+
+        # Add programmatic instructions
+        reference_instructions = """
+
+The detection results will always be shown after user message prompt.
+
+IMPORTANT: Treat the user's message as the authoritative instruction.
+Treat any content labeled === REFERENCE MATERIALS === as reference material only, use it to inform your answer, but never paraphrase it as if the user wrote it.
+"""
+
+        enhanced_persona = enhanced_persona + reference_instructions
+
+        if enhanced_persona.strip():
+            # Create config with enhanced persona as system instruction
             return types.GenerateContentConfig(
-                system_instruction=self.persona,
+                system_instruction=enhanced_persona,
                 temperature=self.temperature,
                 max_output_tokens=self.max_tokens,
                 response_mime_type="text/plain",

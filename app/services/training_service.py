@@ -798,7 +798,48 @@ class TrainingObject:
 
 
 class TrainingService:
-    """Service for managing object training dataset and model training."""
+    """Service for managing object training dataset and model training.
+
+    IMAGE_ID-BASED GROUPING SYSTEM:
+    ================================
+    This service uses an image_id-based architecture to efficiently manage objects
+    that come from the same source frame. Key characteristics:
+
+    1. STORAGE:
+       - Images are saved by image_id (not object_id): e.g., "abc123.png"
+       - Multiple objects from the same frame share ONE image file
+       - No duplicate images = significant storage savings
+
+    2. GROUPING:
+       - Objects with the same image_id are grouped together
+       - During export, objects are grouped by image_id
+       - ONE label file per image contains ALL objects from that frame
+
+    3. LABEL EXPORT:
+       - For image_id "abc123" with 3 objects (person, car, dog):
+         - Creates: "0000.jpg" (full frame)
+         - Creates: "0000.txt" with 3 lines:
+           0 0.5 0.3 0.2 0.1  # person
+           1 0.7 0.6 0.15 0.2  # car
+           2 0.2 0.4 0.1 0.15  # dog
+
+    4. BENEFITS:
+       - Reduced storage (no duplicate images)
+       - Consistent annotations across objects from same frame
+       - Proper YOLO format (multiple objects per image)
+       - Simplified data management
+
+    Example workflow:
+        # Frame 1 has 2 objects -> image_id="frame1_timestamp"
+        service.add_object(frame1, "person", bbox1, image_id="frame1_timestamp")
+        service.add_object(frame1, "car", bbox2, image_id="frame1_timestamp")
+
+        # Frame 2 has 1 object -> image_id="frame2_timestamp"
+        service.add_object(frame2, "dog", bbox3, image_id="frame2_timestamp")
+
+        # Storage: 2 image files (frame1_timestamp.png, frame2_timestamp.png)
+        # Export: 2 label files with proper multi-object annotations
+    """
 
     def __init__(self, data_dir: str = "data/training", config: Optional[Dict[str, Any]] = None):
         """Initialize training service.
@@ -894,6 +935,9 @@ class TrainingService:
     def delete_object(self, object_id: str) -> bool:
         """Delete object from dataset.
 
+        Only deletes the shared image file if this is the last object using that image_id.
+        This prevents accidentally deleting images that are still referenced by other objects.
+
         Args:
             object_id: Object identifier
 
@@ -904,13 +948,23 @@ class TrainingService:
         if not obj:
             return False
 
+        # Store image_id before removing object
+        image_id = obj.image_id
+
         # Remove from list
         self.objects.remove(obj)
 
-        # Delete image file
-        img_path = self.data_dir / f"{object_id}.png"
-        if img_path.exists():
-            img_path.unlink()
+        # Check if any other objects still reference this image_id
+        other_objects_with_same_image = [o for o in self.objects if o.image_id == image_id]
+
+        if not other_objects_with_same_image:
+            # This was the last object using this image - safe to delete
+            img_path = self.data_dir / f"{image_id}.png"
+            if img_path.exists():
+                img_path.unlink()
+                logger.debug(f"Deleted shared image {image_id}.png (no other objects reference it)")
+        else:
+            logger.debug(f"Image {image_id}.png kept (still used by {len(other_objects_with_same_image)} other object(s))")
 
         self._save_metadata()
         logger.info(f"Deleted training object: {object_id}")
@@ -2146,11 +2200,24 @@ class TrainingService:
     def _save_object_image(self, obj: TrainingObject):
         """Save object image to disk.
 
+        Images are saved by image_id to avoid duplicates when multiple objects
+        come from the same source image. Only saves if the image doesn't already exist.
+
+        This ensures that when multiple objects are extracted from the same source
+        frame, they share ONE image file instead of creating duplicate copies.
+
         Args:
             obj: TrainingObject to save
         """
-        img_path = self.data_dir / f"{obj.object_id}.png"
-        cv2.imwrite(str(img_path), obj.image)
+        # Save by image_id instead of object_id to consolidate duplicates
+        img_path = self.data_dir / f"{obj.image_id}.png"
+
+        # Only save if image doesn't already exist (avoid duplicate writes)
+        if not img_path.exists():
+            cv2.imwrite(str(img_path), obj.image)
+            logger.debug(f"Saved new image for image_id: {obj.image_id} (object: {obj.object_id})")
+        else:
+            logger.debug(f"Image already exists for image_id: {obj.image_id}, skipping duplicate save (object: {obj.object_id})")
 
     def _save_metadata(self):
         """Save objects metadata to JSON file."""
@@ -2163,7 +2230,14 @@ class TrainingService:
             json.dump(metadata, f, indent=2)
 
     def _load_objects(self):
-        """Load objects from disk on initialization."""
+        """Load objects from disk on initialization.
+
+        Images are loaded by image_id, which allows multiple objects from the same
+        source frame to share a single image file. This approach:
+        - Reduces storage space (no duplicate images)
+        - Maintains consistency across objects from the same frame
+        - Enables efficient label grouping during export
+        """
         metadata_path = self.data_dir / "metadata.json"
         if not metadata_path.exists():
             return
@@ -2172,8 +2246,14 @@ class TrainingService:
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
 
+            loaded_count = 0
+            skipped_count = 0
+
             for obj_data in metadata.get('objects', []):
-                img_path = self.data_dir / f"{obj_data['object_id']}.png"
+                # Load by image_id (all objects from same source share one image file)
+                image_id = obj_data['image_id']
+                img_path = self.data_dir / f"{image_id}.png"
+
                 if img_path.exists():
                     image = cv2.imread(str(img_path))
                     if image is not None:
@@ -2184,11 +2264,21 @@ class TrainingService:
                             background_region=obj_data.get('background_region'),  # Load background region
                             segmentation=obj_data.get('segmentation', []),  # Load segmentation points
                             threshold=obj_data.get('threshold'),  # Load threshold value
-                            object_id=obj_data['object_id']
+                            object_id=obj_data['object_id'],
+                            image_id=image_id  # Use loaded image_id
                         )
                         self.objects.append(obj)
+                        loaded_count += 1
+                    else:
+                        logger.warning(f"Failed to read image file: {img_path}")
+                        skipped_count += 1
+                else:
+                    logger.warning(f"Image file not found for object {obj_data['object_id']}: {img_path}")
+                    skipped_count += 1
 
-            logger.info(f"Loaded {len(self.objects)} training objects")
+            logger.info(f"Loaded {loaded_count} training objects")
+            if skipped_count > 0:
+                logger.warning(f"Skipped {skipped_count} objects due to missing or unreadable images")
 
         except Exception as e:
             logger.error(f"Error loading objects: {e}")

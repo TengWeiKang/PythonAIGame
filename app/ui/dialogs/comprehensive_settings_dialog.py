@@ -288,20 +288,6 @@ class ComprehensiveSettingsDialog:
             value=self.config.get('model_architecture', 'yolo11n.pt')
         )
 
-        # Debug settings
-        self.debug_mode_var = tk.BooleanVar(
-            value=self.config.get('debug_mode', False)
-        )
-
-        # Data Augmentation settings
-        # NOTE: Augmentation now only supports rotation with intelligent background filling
-        self.enable_augmentation_var = tk.BooleanVar(
-            value=self.config.get('enable_augmentation', False)
-        )
-        self.augmentation_factor_var = tk.IntVar(
-            value=self.config.get('augmentation_factor', 5)
-        )
-
         # Chatbot settings
         self.analysis_mode_var = tk.StringVar(
             value=self.config.get('analysis_mode', 'yolo_detection')
@@ -351,7 +337,6 @@ class ComprehensiveSettingsDialog:
             'model_architecture': self.model_architecture_var.get(),
             'yolo_version': self.yolo_version_var.get(),
             'yolo_size': self.yolo_size_var.get(),
-            'debug_mode': self.debug_mode_var.get(),
             'analysis_mode': self.analysis_mode_var.get(),
             'api_key': self.api_key_var.get(),
             'gemini_model': self.gemini_model_var.get(),
@@ -359,9 +344,6 @@ class ComprehensiveSettingsDialog:
             'max_tokens': self.max_tokens_var.get(),
             'timeout': self.timeout_var.get(),
             'chatbot_persona': self.chatbot_persona_var.get(),
-            # Data Augmentation settings (rotation only)
-            'enable_augmentation': self.enable_augmentation_var.get(),
-            'augmentation_factor': self.augmentation_factor_var.get(),
         }
 
     def _setup_change_tracking(self):
@@ -374,11 +356,9 @@ class ComprehensiveSettingsDialog:
             self.confidence_threshold_var, self.iou_threshold_var,
             self.train_epochs_var, self.train_batch_size_var, self.train_device_var,
             self.model_architecture_var, self.yolo_version_var, self.yolo_size_var,
-            self.debug_mode_var, self.analysis_mode_var,
+            self.analysis_mode_var,
             self.api_key_var, self.gemini_model_var, self.temperature_var, self.max_tokens_var,
-            self.timeout_var, self.chatbot_persona_var,
-            # Augmentation variables (rotation only)
-            self.enable_augmentation_var, self.augmentation_factor_var
+            self.timeout_var, self.chatbot_persona_var
         ]
 
         for var in variables:
@@ -1133,118 +1113,6 @@ class ComprehensiveSettingsDialog:
         )
         cache_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
 
-        # Data Augmentation Section
-        augmentation_section, augmentation_content = self._create_section_frame(scrollable_frame, "🔄 Data Augmentation")
-        augmentation_section.pack(fill='x', pady=(0, 10))
-
-        # Enable augmentation checkbox
-        self._create_checkbox(
-            augmentation_content,
-            "Enable Data Augmentation",
-            self.enable_augmentation_var
-        ).pack(anchor='w', pady=5)
-
-        # Description for augmentation
-        aug_desc = tk.Label(
-            augmentation_content,
-            text="Data augmentation creates variations of training images to improve model generalization and reduce overfitting.\nAugmentation methods are categorized into two types:\n• Deterministic (1×): Same result every time - applied once (horizontal_flip, vertical_flip, edge_enhance)\n• Stochastic (×N): Random parameters - applied multiple times based on factor below (rotation, brightness, etc.)",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_muted'],
-            font=('Segoe UI', 8),
-            justify='left',
-            wraplength=500
-        )
-        aug_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
-
-        # Augmentation factor control
-        factor_frame = tk.Frame(augmentation_content, bg=self.COLORS['bg_secondary'])
-        factor_frame.pack(fill='x', pady=(0, 10))
-
-        tk.Label(
-            factor_frame,
-            text="Augmentation Factor (for stochastic methods):",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_primary'],
-            font=('Segoe UI', 9, 'bold')
-        ).pack(side='left', padx=(0, 10))
-
-        factor_spin = tk.Spinbox(
-            factor_frame,
-            from_=1, to=10, increment=1,
-            textvariable=self.augmentation_factor_var,
-            bg=self.COLORS['bg_tertiary'],
-            fg=self.COLORS['text_primary'],
-            width=6
-        )
-        factor_spin.pack(side='left', padx=(0, 10))
-
-        tk.Label(
-            factor_frame,
-            text="(Higher = more variations, longer training time)",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_muted'],
-            font=('Segoe UI', 8, 'italic')
-        ).pack(side='left')
-
-        # Augmentation behavior note
-        behavior_note = tk.Label(
-            augmentation_content,
-            text="Rotation Augmentation Behavior:\n• When enabled, full original images are rotated at multiple random angles\n• Each object generates N rotated versions based on the augmentation factor\n• Empty regions from rotation are filled with intelligent background colors\n• Example: Factor=5 means 1 original + 4 rotated versions = 5 images per object",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['accent_primary'],
-            font=('Segoe UI', 8, 'italic'),
-            justify='left',
-            wraplength=500
-        )
-        behavior_note.pack(anchor='w', pady=(0, 10), padx=(0, 0))
-
-        # Background filling explanation
-        bg_fill_note = tk.Label(
-            augmentation_content,
-            text="Background Filling:\n• When drawing objects, you can optionally select a background region\n• Rotation gaps will be filled with random colors sampled from that region\n• This creates more realistic augmented images compared to black or solid color fills\n• If no background region is selected, mean color from image borders is used",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_secondary'],
-            font=('Segoe UI', 8),
-            justify='left',
-            wraplength=500
-        )
-        bg_fill_note.pack(anchor='w', pady=(0, 10), padx=(0, 0))
-
-        # Recommended settings
-        recommendations_note = tk.Label(
-            augmentation_content,
-            text="Recommended Settings:\n• Small datasets (5-10 objects): Factor=5-7 for good diversity\n• Medium datasets (10-20 objects): Factor=3-5 for balanced augmentation\n• Large datasets (20+ objects): Factor=2-3 to avoid excessive training time",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['warning'],
-            font=('Segoe UI', 8, 'italic'),
-            justify='left',
-            wraplength=500
-        )
-        recommendations_note.pack(anchor='w', pady=(0, 5), padx=(0, 0))
-
-        # Debug Settings Section
-        debug_section, debug_content = self._create_section_frame(scrollable_frame, "🐛 Debug Mode")
-        debug_section.pack(fill='x', pady=(0, 10))
-
-        # Enable debug mode checkbox
-        self._create_checkbox(
-            debug_content,
-            "Enable Debug Mode",
-            self.debug_mode_var
-        ).pack(anchor='w', pady=5)
-
-        # Description for debug mode
-        debug_desc = tk.Label(
-            debug_content,
-            text="When enabled, right-click on any canvas to access debug options:\n• Test Model: Run YOLO detection and draw bounding boxes\n• Clear: Remove all drawn boxes",
-            bg=self.COLORS['bg_secondary'],
-            fg=self.COLORS['text_muted'],
-            font=('Segoe UI', 8),
-            justify='left',
-            wraplength=500
-        )
-        debug_desc.pack(anchor='w', pady=(0, 10), padx=(0, 0))
-
         # # Region of Interest Section
         # roi_section, roi_content = self._create_section_frame(scrollable_frame, "📐 Region of Interest")
         # roi_section.pack(fill='x', pady=(0, 10))
@@ -1763,17 +1631,13 @@ class ComprehensiveSettingsDialog:
             self.model_architecture_var.get() != self.original_values['model_architecture'] or
             self.yolo_version_var.get() != self.original_values['yolo_version'] or
             self.yolo_size_var.get() != self.original_values['yolo_size'] or
-            self.debug_mode_var.get() != self.original_values['debug_mode'] or
             self.analysis_mode_var.get() != self.original_values['analysis_mode'] or
             self.api_key_var.get() != self.original_values['api_key'] or
             self.gemini_model_var.get() != self.original_values['gemini_model'] or
             self.temperature_var.get() != self.original_values['temperature'] or
             self.max_tokens_var.get() != self.original_values['max_tokens'] or
             self.timeout_var.get() != self.original_values['timeout'] or
-            self.chatbot_persona_var.get() != self.original_values['chatbot_persona'] or
-            # Data Augmentation settings
-            self.enable_augmentation_var.get() != self.original_values['enable_augmentation'] or
-            self.augmentation_factor_var.get() != self.original_values['augmentation_factor']
+            self.chatbot_persona_var.get() != self.original_values['chatbot_persona']
         )
 
         # Update state and UI
@@ -1911,7 +1775,6 @@ class ComprehensiveSettingsDialog:
             # Construct and save the architecture from version + size
             self.config['model_architecture'] = self._get_model_architecture()
 
-            self.config['debug_mode'] = self.debug_mode_var.get()
             self.config['analysis_mode'] = self.analysis_mode_var.get()
             self.config['gemini_api_key'] = self.api_key_var.get()
             self.config['gemini_model'] = self.gemini_model_var.get()
@@ -1919,15 +1782,6 @@ class ComprehensiveSettingsDialog:
             self.config['gemini_max_tokens'] = self.max_tokens_var.get()
             self.config['gemini_timeout'] = self.timeout_var.get()
             self.config['chatbot_persona'] = self.chatbot_persona_var.get()
-
-            # Save Data Augmentation settings
-            # NOTE: Augmentation is now rotation-only with intelligent background filling
-            self.config['enable_augmentation'] = self.enable_augmentation_var.get()
-            self.config['augmentation_factor'] = self.augmentation_factor_var.get()
-
-            # Augmentation type is always 'rotation' when enabled
-            # This simplifies the config and focuses on the new rotation-based approach
-            self.config['augmentation_types'] = ['rotation'] if self.enable_augmentation_var.get() else []
 
             # Save config to file
             self._save_config()

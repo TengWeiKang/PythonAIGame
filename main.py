@@ -9,6 +9,7 @@ import os
 import json
 import threading
 import logging
+from logging.handlers import RotatingFileHandler
 import uuid
 from typing import Optional, Dict, Any, Callable, List
 from datetime import datetime
@@ -29,9 +30,76 @@ from app.ui.dialogs.comprehensive_settings_dialog import ComprehensiveSettingsDi
 from app.ui.dialogs.training_progress_dialog import TrainingProgressDialog
 from app.ui.dialogs.object_naming_dialog import ObjectNamingDialog
 from app.ui.dialogs.bbox_drawing_dialog import BboxDrawingDialog, ImageSourceDialog
+from app.ui.dialogs.data_augmentation_dialog import DataAugmentationDialog
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+def setup_logging():
+    """Configure logging with console and optional file output based on config.json settings."""
+    # Load config to get logging settings
+    config = {}
+    config_path = "config.json"
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load config for logging setup: {e}")
+
+    # Get logging configuration from config.json
+    log_level = config.get('log_level', 'INFO').upper()
+    enable_file_logging = config.get('enable_file_logging', False)
+    log_file_path = config.get('log_file_path', 'logs/app.log')
+    max_file_size_mb = config.get('max_file_size_mb', 10)
+    backup_count = config.get('backup_count', 5)
+
+    # Convert log level string to logging constant
+    numeric_level = getattr(logging, log_level, logging.INFO)
+
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # Get root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+
+    # Remove existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+
+    # Configure console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(numeric_level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    # Configure file handler if enabled
+    if enable_file_logging:
+        try:
+            # Create log directory if it doesn't exist
+            log_dir = os.path.dirname(log_file_path)
+            if log_dir and not os.path.exists(log_dir):
+                os.makedirs(log_dir, exist_ok=True)
+
+            # Create rotating file handler
+            file_handler = RotatingFileHandler(
+                filename=log_file_path,
+                maxBytes=max_file_size_mb * 1024 * 1024,  # Convert MB to bytes
+                backupCount=backup_count,
+                encoding='utf-8'
+            )
+            file_handler.setLevel(numeric_level)
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+
+            # Log that file logging is enabled
+            root_logger.info(f"File logging enabled: {log_file_path} (max {max_file_size_mb}MB, {backup_count} backups)")
+        except Exception as e:
+            # If file logging fails, log error to console but continue
+            root_logger.error(f"Failed to setup file logging: {e}")
+
+    return root_logger
+
+# Initialize logging
+setup_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +149,9 @@ class MainWindow:
         self._live_detection_active = False
         self._class_colors = {}  # Color mapping for detected classes
         self._detection_in_progress = False  # Flag to prevent concurrent detections
+
+        # Objects management multi-selection state
+        self.checked_objects: set[str] = set()  # Set of checked object IDs
 
         # Check Gemini configuration
         self._gemini_configured = bool(self.config.get('gemini_api_key', '').strip())
@@ -300,7 +371,16 @@ class MainWindow:
             state='disabled'
         )
         self.stop_button.pack(side='left', padx=(0, 10))
-        
+
+        self.save_frame_button = ttk.Button(
+            left_frame,
+            text="💾 Save Frame",
+            style='Secondary.TButton',
+            command=self._on_save_frame,
+            state='disabled'
+        )
+        self.save_frame_button.pack(side='left', padx=(0, 10))
+
         # Right side - Settings and help
         right_frame = tk.Frame(toolbar_frame, bg=self.COLORS['bg_secondary'])
         right_frame.pack(side='right', padx=20, pady=15)
@@ -569,6 +649,15 @@ class MainWindow:
             style='Modern.TButton',
             command=self._start_object_selection
         ).pack(side='left', padx=5, pady=10)
+
+        
+        ttk.Button(
+            controls_frame,
+            text="🎲 Data Augmentation",
+            style='Secondary.TButton',
+            command=self._open_augmentation_dialog
+        ).pack(side='left', padx=2, pady=5)
+
         
         # Image display
         image_frame = tk.Frame(parent, bg=self.COLORS['bg_primary'])
@@ -668,18 +757,33 @@ class MainWindow:
         buttons_frame.pack(fill='x', pady=(5, 0))
         buttons_frame.pack_propagate(False)
 
+        # Selection control buttons
+        ttk.Button(
+            buttons_frame,
+            text="☑ Select All",
+            style='Secondary.TButton',
+            command=self._select_all_objects
+        ).pack(side='left', padx=(5, 2), pady=5)
+
+        ttk.Button(
+            buttons_frame,
+            text="☐ Deselect All",
+            style='Secondary.TButton',
+            command=self._deselect_all_objects
+        ).pack(side='left', padx=2, pady=5)
+
         ttk.Button(
             buttons_frame,
             text="✏️ Edit",
             style='Secondary.TButton',
             command=self._edit_selected_object
-        ).pack(side='left', padx=(5, 2), pady=5)
+        ).pack(side='left', padx=2, pady=5)
 
         ttk.Button(
             buttons_frame,
             text="🗑️ Delete",
             style='Secondary.TButton',
-            command=self._delete_selected_object
+            command=self._delete_selected_objects
         ).pack(side='left', padx=2, pady=5)
 
         # Note: View button removed - clicking on an item in the list now displays it automatically
@@ -937,6 +1041,7 @@ class MainWindow:
             if self.webcam_service.start_stream():
                 self.start_button.config(state='disabled')
                 self.stop_button.config(state='normal')
+                self.save_frame_button.config(state='normal')
                 self.status_label.config(text="Webcam stream started")
                 self.connection_label.config(text="🟢 Connected", fg=self.COLORS['success'])
                 logger.info("Webcam stream started")
@@ -953,6 +1058,7 @@ class MainWindow:
             self.webcam_service.stop_stream()
             self.start_button.config(state='normal')
             self.stop_button.config(state='disabled')
+            self.save_frame_button.config(state='disabled')
             self.status_label.config(text="Webcam stream stopped")
             self.connection_label.config(text="⚪ Disconnected", fg=self.COLORS['text_muted'])
 
@@ -969,6 +1075,95 @@ class MainWindow:
         except Exception as e:
             logger.error(f"Error stopping stream: {e}")
 
+    def _on_save_frame(self) -> None:
+        """
+        Handle save frame button click to save the current video stream frame.
+
+        Retrieves the current frame from the webcam service, prompts the user
+        for a save location using a file dialog, and saves the frame to disk
+        in the selected format (JPEG or PNG).
+
+        Features:
+        - Validates frame availability before prompting for save location
+        - Suggests timestamped filename for organization
+        - Supports multiple image formats (JPEG, PNG)
+        - Provides user feedback on success or failure
+        - Comprehensive error handling with logging
+
+        Returns:
+            None
+        """
+        try:
+            # Get current frame from webcam service
+            frame = self.webcam_service.get_current_frame()
+
+            # Validate frame availability
+            if frame is None:
+                messagebox.showerror(
+                    "No Frame Available",
+                    "No video frame is currently available to save.\n\n"
+                    "Please ensure the video stream is active and displaying frames."
+                )
+                logger.warning("Save frame attempted but no frame available")
+                return
+
+            # Generate timestamp for default filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_filename = f"frame_{timestamp}.jpg"
+
+            # Open file save dialog
+            file_path = filedialog.asksaveasfilename(
+                title="Save Video Frame",
+                initialfile=default_filename,
+                defaultextension=".jpg",
+                filetypes=[
+                    ("JPEG Image", "*.jpg"),
+                    ("PNG Image", "*.png"),
+                    ("All files", "*.*")
+                ]
+            )
+
+            # Check if user cancelled the dialog
+            if not file_path:
+                logger.info("Save frame cancelled by user")
+                return
+
+            # Save the frame using OpenCV
+            success = cv2.imwrite(file_path, frame)
+
+            if success:
+                # Show success message
+                messagebox.showinfo(
+                    "Frame Saved",
+                    f"Video frame saved successfully!\n\n"
+                    f"Location: {file_path}"
+                )
+                logger.info(f"Frame saved successfully to: {file_path}")
+            else:
+                # Save operation failed
+                messagebox.showerror(
+                    "Save Failed",
+                    f"Failed to save frame to:\n{file_path}\n\n"
+                    "Please check the file path and try again."
+                )
+                logger.error(f"Failed to save frame to: {file_path}")
+
+        except PermissionError as e:
+            messagebox.showerror(
+                "Permission Denied",
+                f"Permission denied when saving frame.\n\n"
+                f"Error: {e}\n\n"
+                "Please check file permissions and try again."
+            )
+            logger.error(f"Permission error saving frame: {e}")
+
+        except Exception as e:
+            messagebox.showerror(
+                "Error Saving Frame",
+                f"An unexpected error occurred while saving the frame:\n\n"
+                f"{type(e).__name__}: {e}"
+            )
+            logger.error(f"Error saving frame: {type(e).__name__}: {e}", exc_info=True)
 
     def _update_video_stream(self):
         """Update video display with current frame."""
@@ -1699,13 +1894,20 @@ class MainWindow:
     # and _start_object_selection methods instead
 
     def _refresh_objects_list(self):
-        """Refresh the objects listbox."""
+        """Refresh the objects listbox with checkbox indicators.
+
+        Maintains checkbox state after refresh by checking the checked_objects set.
+        Displays checkboxes as: ☐ (unchecked) or ☑ (checked)
+        """
         try:
             self._objects_listbox.delete(0, tk.END)
 
             objects = self.training_service.get_all_objects()
             for obj in objects:
-                self._objects_listbox.insert(tk.END, f"{obj.label} ({obj.object_id})")
+                # Determine checkbox state based on checked_objects set
+                checkbox = "☑" if obj.object_id in self.checked_objects else "☐"
+                display_text = f"{checkbox} {obj.label} ({obj.object_id})"
+                self._objects_listbox.insert(tk.END, display_text)
 
             # Update count
             counts = self.training_service.get_object_count()
@@ -1716,6 +1918,55 @@ class MainWindow:
         except Exception as e:
             logger.error(f"Error refreshing objects list: {e}")
 
+    def _select_all_objects(self):
+        """Select all objects and check all checkboxes.
+
+        Marks all items in the listbox as checked and updates the visual display.
+        Adds all object IDs to the checked_objects set.
+        """
+        try:
+            objects = self.training_service.get_all_objects()
+
+            if not objects:
+                messagebox.showinfo("Info", "No objects to select")
+                return
+
+            # Add all object IDs to checked set
+            for obj in objects:
+                self.checked_objects.add(obj.object_id)
+
+            # Refresh display to show all checkboxes as checked
+            self._refresh_objects_list()
+
+            # Update status
+            count = len(objects)
+            self.status_label.config(text=f"Selected all {count} object(s)")
+            logger.info(f"Selected all {count} objects")
+
+        except Exception as e:
+            logger.error(f"Error selecting all objects: {e}")
+            messagebox.showerror("Error", f"Failed to select all objects: {e}")
+
+    def _deselect_all_objects(self):
+        """Deselect all objects and uncheck all checkboxes.
+
+        Marks all items in the listbox as unchecked and updates the visual display.
+        Clears the checked_objects set.
+        """
+        try:
+            # Clear the checked objects set
+            self.checked_objects.clear()
+
+            # Refresh display to show all checkboxes as unchecked
+            self._refresh_objects_list()
+
+            # Update status
+            self.status_label.config(text="Deselected all objects")
+            logger.info("Deselected all objects")
+
+        except Exception as e:
+            logger.error(f"Error deselecting all objects: {e}")
+            messagebox.showerror("Error", f"Failed to deselect all objects: {e}")
 
     def _edit_selected_object(self):
         """Edit selected object label."""
@@ -1747,32 +1998,83 @@ class MainWindow:
         except Exception as e:
             logger.error(f"Error editing object: {e}")
 
-    def _delete_selected_object(self):
-        """Delete selected object."""
+    def _delete_selected_objects(self):
+        """Delete all checked objects in batch.
+
+        Handles multi-delete functionality by deleting all objects that have been
+        checked via the checkbox system. Shows confirmation dialog with count.
+
+        Edge cases handled:
+        - No objects checked: Shows warning
+        - Invalid object indices: Validates before deletion
+        - All objects selected: Confirms and deletes all
+        """
         try:
-            selection = self._objects_listbox.curselection()
-            if not selection:
-                messagebox.showwarning("Warning", "Please select an object first")
+            # Check if any objects are checked
+            if not self.checked_objects:
+                messagebox.showwarning("Warning", "Please check at least one object to delete")
                 return
 
-            idx = selection[0]
-            objects = self.training_service.get_all_objects()
+            # Get all objects and filter to checked ones
+            all_objects = self.training_service.get_all_objects()
+            objects_to_delete = [obj for obj in all_objects if obj.object_id in self.checked_objects]
 
-            if idx < len(objects):
-                obj = objects[idx]
+            if not objects_to_delete:
+                messagebox.showwarning("Warning", "No valid objects selected for deletion")
+                self.checked_objects.clear()  # Clear stale IDs
+                self._refresh_objects_list()
+                return
 
-                if messagebox.askyesno("Confirm Delete", f"Delete object '{obj.label}'?"):
+            # Confirm deletion with count
+            count = len(objects_to_delete)
+            object_labels = ", ".join([obj.label for obj in objects_to_delete[:3]])  # Show first 3
+            if count > 3:
+                object_labels += f", and {count - 3} more"
+
+            confirmation_msg = f"Delete {count} selected object(s)?\n\nObjects: {object_labels}"
+            if not messagebox.askyesno("Confirm Delete", confirmation_msg):
+                return
+
+            # Delete all checked objects
+            deleted_count = 0
+            failed_count = 0
+            for obj in objects_to_delete:
+                try:
                     self.training_service.delete_object(obj.object_id)
-                    self._refresh_objects_list()
-                    self.status_label.config(text=f"Object deleted: {obj.label}")
+                    deleted_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to delete object {obj.object_id}: {e}")
+                    failed_count += 1
+
+            # Clear checked objects set
+            self.checked_objects.clear()
+
+            # Refresh the list
+            self._refresh_objects_list()
+
+            # Update status with results
+            if failed_count == 0:
+                self.status_label.config(text=f"Successfully deleted {deleted_count} object(s)")
+                logger.info(f"Deleted {deleted_count} objects")
+            else:
+                self.status_label.config(
+                    text=f"Deleted {deleted_count} object(s), {failed_count} failed"
+                )
+                logger.warning(f"Deleted {deleted_count} objects, {failed_count} failed")
+                messagebox.showwarning(
+                    "Partial Deletion",
+                    f"Successfully deleted {deleted_count} object(s)\nFailed to delete {failed_count} object(s)"
+                )
 
         except Exception as e:
-            logger.error(f"Error deleting object: {e}")
+            logger.error(f"Error deleting objects: {e}")
+            messagebox.showerror("Error", f"Failed to delete objects: {e}")
 
     def _view_selected_object(self):
         """View selected object image in the Objects tab canvas.
 
-        Displays the full frame with bbox annotation, not just the cropped object.
+        Displays the full frame with contour/bbox annotation, not just the cropped object.
+        Prioritizes showing segmentation contours when available.
         """
         try:
             selection = self._objects_listbox.curselection()
@@ -1786,10 +2088,11 @@ class MainWindow:
             if idx < len(objects):
                 obj = objects[idx]
 
-                # Display full frame with bbox annotation
-                annotated_frame = obj.image.copy()
+                # Display full frame with contour/bbox annotation
+                annotated_frame = self._draw_object_contour(obj.image, obj, color=(0, 255, 0), thickness=2)
+
+                # Add label text
                 x1, y1, x2, y2 = obj.bbox
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(
                     annotated_frame,
                     obj.label,
@@ -1801,8 +2104,11 @@ class MainWindow:
                 )
 
                 self._objects_canvas.display_image(annotated_frame)
-                self.objects_status_label.config(text=f"Viewing: {obj.label} (full frame with bbox)")
-                logger.info(f"Displaying object '{obj.label}' with bbox annotation")
+
+                # Update status to reflect what's being displayed
+                display_type = "contour" if obj.segmentation and len(obj.segmentation) > 0 else "bbox"
+                self.objects_status_label.config(text=f"Viewing: {obj.label} (full frame with {display_type})")
+                logger.info(f"Displaying object '{obj.label}' with {display_type} annotation")
 
         except Exception as e:
             logger.error(f"Error viewing object: {e}")
@@ -1904,13 +2210,91 @@ class MainWindow:
             logger.error(f"Error starting training: {e}")
             messagebox.showerror("Error", f"Failed to start training: {e}")
 
+    def _open_augmentation_dialog(self):
+        """Open the data augmentation dialog."""
+        try:
+            # Check if we have training objects
+            if not self.training_service.objects:
+                messagebox.showwarning(
+                    "No Objects",
+                    "Please add training objects first before using data augmentation."
+                )
+                return
+
+            # Open augmentation dialog
+            dialog = DataAugmentationDialog(
+                self.root,
+                self.training_service,
+                self.webcam_service
+            )
+            dialog.show()
+
+            # Refresh objects list to show newly augmented objects
+            self._refresh_objects_list()
+
+            # Update objects status label
+            objects_count = len(self.training_service.get_all_objects())
+            self.objects_status_label.config(
+                text=f"Total objects: {objects_count}"
+            )
+
+            logger.info("Data augmentation dialog closed, objects list refreshed")
+
+        except Exception as e:
+            logger.error(f"Error opening augmentation dialog: {e}")
+            messagebox.showerror("Error", f"Failed to open augmentation dialog: {e}")
 
     def _on_objects_listbox_mousewheel(self, event):
         """Handle mouse wheel scrolling on objects listbox."""
         self._objects_listbox.yview_scroll(-1 * int(event.delta / 120), "units")
 
+    def _draw_object_contour(self, image: np.ndarray, obj, color: tuple = (0, 255, 0), thickness: int = 2) -> np.ndarray:
+        """Draw object contour or bbox on image.
+
+        Prioritizes drawing segmentation contours over bounding boxes for more accurate
+        visualization of the training data.
+
+        Args:
+            image: Image to draw on (will be copied)
+            obj: TrainingObject with segmentation or bbox
+            color: BGR color tuple for the contour/bbox
+            thickness: Line thickness
+
+        Returns:
+            Image with contour or bbox drawn
+        """
+        result = image.copy()
+        h, w = image.shape[:2]
+
+        if obj.segmentation and len(obj.segmentation) > 0:
+            # Convert normalized YOLO segmentation to pixel coordinates
+            points = []
+            for i in range(0, len(obj.segmentation), 2):
+                x = int(obj.segmentation[i] * w)
+                y = int(obj.segmentation[i + 1] * h)
+                points.append([x, y])
+
+            contour = np.array(points, dtype=np.int32)
+
+            # Draw contour outline
+            cv2.polylines(result, [contour], True, color, thickness)
+
+            logger.debug(f"Drew contour with {len(points)} points for object '{obj.label}'")
+        else:
+            # Fallback to bounding box if no segmentation
+            x1, y1, x2, y2 = obj.bbox
+            cv2.rectangle(result, (x1, y1), (x2, y2), color, thickness)
+
+            logger.debug(f"Drew bbox (no segmentation) for object '{obj.label}'")
+
+        return result
+
     def _on_listbox_item_clicked(self, event):
-        """Handle listbox item selection - automatically display the selected object.
+        """Handle listbox item selection - toggle checkbox and display the selected object.
+
+        This method provides dual functionality:
+        1. Toggles the checkbox state for the clicked item
+        2. Displays the object on the canvas (preserves existing behavior)
 
         Args:
             event: Listbox selection event
@@ -1920,32 +2304,55 @@ class MainWindow:
             if not selection:
                 return
 
-            idx = selection[0]
+            # Get the clicked index (the last item in selection for multiple select mode)
+            idx = selection[-1]  # Use last selected item
             objects = self.training_service.get_all_objects()
 
-            if idx < len(objects):
-                obj = objects[idx]
+            if idx >= len(objects):
+                logger.warning(f"Index {idx} out of range for objects list (length: {len(objects)})")
+                return
 
-                # Display full frame with bbox annotation
-                annotated_frame = obj.image.copy()
-                x1, y1, x2, y2 = obj.bbox
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(
-                    annotated_frame,
-                    obj.label,
-                    (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 0),
-                    2
-                )
+            obj = objects[idx]
 
-                self._objects_canvas.display_image(annotated_frame)
-                self.objects_status_label.config(text=f"Viewing: {obj.label} (full frame with bbox)")
-                logger.info(f"Auto-displaying object '{obj.label}' with bbox annotation")
+            # Log the click for debugging
+            logger.debug(f"Listbox item clicked - Index: {idx}, Object ID: {obj.object_id}, Label: {obj.label}")
+
+            # Toggle checkbox state for the clicked item
+            if obj.object_id in self.checked_objects:
+                self.checked_objects.remove(obj.object_id)
+                checkbox_state = "unchecked"
+            else:
+                self.checked_objects.add(obj.object_id)
+                checkbox_state = "checked"
+
+            # Refresh the entire list to reflect the new checkbox state
+            # This is more robust than delete/insert which can cause event re-entrancy issues
+            # where queued events operate on stale indices, toggling the wrong item
+            logger.debug(f"Refreshing objects list after toggling '{obj.label}' to {checkbox_state}")
+            self._refresh_objects_list()
+
+            # Restore selection to maintain visual feedback
+            # Must clear all selections first to ensure clean state in MULTIPLE selectmode
+            self._objects_listbox.selection_clear(0, tk.END)
+            self._objects_listbox.selection_set(idx)
+            logger.debug(f"Restored selection to index {idx}")
+
+            # Clear any existing contours/debug boxes from canvas before displaying new object
+            self._objects_canvas.clear_debug_boxes()
+
+            # Display full frame with contour/bbox annotation (preserve existing functionality)
+            annotated_frame = self._draw_object_contour(obj.image, obj, color=(0, 255, 0), thickness=2)
+            self._objects_canvas.display_image(annotated_frame)
+
+            # Update status to reflect what's being displayed
+            display_type = "contour" if obj.segmentation and len(obj.segmentation) > 0 else "bbox"
+            self.objects_status_label.config(
+                text=f"Viewing: {obj.label} (full frame with {display_type}) - {checkbox_state}"
+            )
+            logger.info(f"Toggled checkbox for '{obj.label}' (ID: {obj.object_id}, index: {idx}) to {checkbox_state}, displaying with {display_type} annotation")
 
         except Exception as e:
-            logger.error(f"Error displaying object from list click: {e}")
+            logger.error(f"Error handling listbox item click: {e}", exc_info=True)
 
     # ========== CHAT TAB HANDLERS ==========
 

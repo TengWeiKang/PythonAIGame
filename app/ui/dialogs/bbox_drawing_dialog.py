@@ -155,10 +155,7 @@ class BboxDrawingDialog:
         # Multi-object tracking
         self.objects: List[Dict] = []  # List of {'bbox': (x1,y1,x2,y2), 'class': str, 'background_region': Optional[tuple], 'segmentation': List[float], 'threshold': int, 'threshold_channel': str}
         self.current_bbox: Optional[tuple] = None
-        self.background_region: Optional[tuple] = None  # Shared background region for all objects
-        self.background_rect_id: Optional[int] = None  # Canvas ID for background region
         self.drawing = False
-        self.drawing_background = False  # Whether we're currently drawing background
         self.start_point: Optional[tuple] = None
         self.current_rect_id: Optional[int] = None
         self.saved_rect_ids: List[int] = []  # Canvas IDs for saved bboxes
@@ -284,9 +281,8 @@ class BboxDrawingDialog:
         instructions = """1. Draw bbox around object
 2. Adjust threshold (object = WHITE)
 3. Use Invert if needed
-4. Optional: Draw background
-5. Select class (right panel)
-6. Click "Add Object" """
+4. Select class (right panel)
+5. Click "Add Object" """
 
         ttk.Label(
             instructions_frame,
@@ -541,26 +537,6 @@ class BboxDrawingDialog:
         """Build action buttons section."""
         button_frame = ttk.Frame(parent)
         button_frame.pack(fill='x', side='bottom', pady=(10, 0))
-
-        # Background region button
-        self.bg_button = ttk.Button(
-            button_frame,
-            text="🎨 Draw Background Region",
-            command=self._start_background_drawing,
-            width=25
-        )
-        self.bg_button.pack(fill='x', pady=2)
-
-        # Background status label
-        self.bg_status_label = ttk.Label(
-            button_frame,
-            text="No background region selected",
-            font=('Segoe UI', 8),
-            foreground='gray'
-        )
-        self.bg_status_label.pack(pady=(2, 5))
-
-        ttk.Separator(button_frame, orient='horizontal').pack(fill='x', pady=5)
 
         # Add object button
         self.add_button = ttk.Button(
@@ -850,19 +826,19 @@ class BboxDrawingDialog:
         return points
 
     def _on_mouse_down(self, event):
-        """Handle mouse button down - start drawing bbox or background."""
+        """Handle mouse button down - start drawing bbox."""
         self.drawing = True
         self.start_point = (event.x, event.y)
 
-        # Clear previous current rectangle (but not background or saved bboxes)
+        # Clear previous current rectangle (but not saved bboxes)
         if self.current_rect_id:
             self.canvas.delete(self.current_rect_id)
             self.current_rect_id = None
 
-        logger.debug(f"Started drawing {'background' if self.drawing_background else 'bbox'} at canvas coords: {self.start_point}")
+        logger.debug(f"Started drawing bbox at canvas coords: {self.start_point}")
 
     def _on_mouse_drag(self, event):
-        """Handle mouse drag - update bbox or background preview."""
+        """Handle mouse drag - update bbox preview."""
         if not self.drawing or not self.start_point:
             return
 
@@ -870,18 +846,13 @@ class BboxDrawingDialog:
         if self.current_rect_id:
             self.canvas.delete(self.current_rect_id)
 
-        # Draw current rectangle with appropriate color
+        # Draw current rectangle
         x1, y1 = self.start_point
         x2, y2 = event.x, event.y
 
-        if self.drawing_background:
-            # YELLOW for background region
-            outline_color = '#FFFF00'
-            tag = 'current_background'
-        else:
-            # GREEN for object bbox
-            outline_color = '#00FF00'
-            tag = 'current_bbox'
+        # GREEN for object bbox
+        outline_color = '#00FF00'
+        tag = 'current_bbox'
 
         self.current_rect_id = self.canvas.create_rectangle(
             x1, y1, x2, y2,
@@ -891,7 +862,7 @@ class BboxDrawingDialog:
         )
 
     def _on_mouse_up(self, event):
-        """Handle mouse button up - finalize bbox or background."""
+        """Handle mouse button up - finalize bbox."""
         if not self.drawing or not self.start_point:
             return
 
@@ -912,10 +883,7 @@ class BboxDrawingDialog:
                 "Selection is too small. Please draw a larger area.",
                 parent=self.dialog
             )
-            if self.drawing_background:
-                self._cancel_background_drawing()
-            else:
-                self._clear_current_bbox()
+            self._clear_current_bbox()
             return
 
         # Convert to image coordinates
@@ -929,53 +897,27 @@ class BboxDrawingDialog:
         img_y1 = max(0, min(img_y1, h - 1))
         img_y2 = max(0, min(img_y2, h))
 
-        if self.drawing_background:
-            # Store background region
-            self.background_region = (img_x1, img_y1, img_x2, img_y2)
+        # Store bbox in image coordinates
+        self.current_bbox = (img_x1, img_y1, img_x2, img_y2)
 
-            # Change rect color to persistent yellow
-            if self.current_rect_id:
-                self.canvas.itemconfig(self.current_rect_id, outline='#CCCC00', width=2)
-                self.canvas.itemconfig(self.current_rect_id, tags='background_region')
-                self.background_rect_id = self.current_rect_id
-                self.current_rect_id = None
+        # Enable add button
+        self.add_button.config(state='normal')
 
-            # Update status
-            bg_width = img_x2 - img_x1
-            bg_height = img_y2 - img_y1
-            self.bg_status_label.config(
-                text=f"✓ Background: {bg_width}x{bg_height}px",
-                foreground='green'
-            )
-            self.bg_button.config(text="🎨 Redraw Background")
+        # Update status
+        bbox_width = img_x2 - img_x1
+        bbox_height = img_y2 - img_y1
+        self.canvas_status.config(
+            text=f"✓ Box: {bbox_width}x{bbox_height}px at ({img_x1},{img_y1})",
+            foreground='green'
+        )
+        self.status_label.config(
+            text="Select a class and click Add Object"
+        )
 
-            # Exit background drawing mode
-            self.drawing_background = False
-            self.canvas.config(cursor='crosshair')
+        # Update binary preview for the new bbox
+        self._update_binary_preview()
 
-            logger.info(f"Background region set: {self.background_region}")
-        else:
-            # Store bbox in image coordinates
-            self.current_bbox = (img_x1, img_y1, img_x2, img_y2)
-
-            # Enable add button
-            self.add_button.config(state='normal')
-
-            # Update status
-            bbox_width = img_x2 - img_x1
-            bbox_height = img_y2 - img_y1
-            self.canvas_status.config(
-                text=f"✓ Box: {bbox_width}x{bbox_height}px at ({img_x1},{img_y1})",
-                foreground='green'
-            )
-            self.status_label.config(
-                text="Select a class and click Add Object"
-            )
-
-            # Update binary preview for the new bbox
-            self._update_binary_preview()
-
-            logger.info(f"Bbox drawn: {self.current_bbox}")
+        logger.info(f"Bbox drawn: {self.current_bbox}")
 
     def _on_threshold_changed(self, value=None):
         """Handle threshold slider change or invert checkbox toggle.
@@ -1090,52 +1032,6 @@ class BboxDrawingDialog:
         )
         self.status_label.config(text="")
 
-    def _start_background_drawing(self):
-        """Start drawing background region mode."""
-        # Clear any existing background
-        if self.background_rect_id:
-            self.canvas.delete(self.background_rect_id)
-            self.background_rect_id = None
-
-        self.background_region = None
-        self.drawing_background = True
-
-        # Update UI
-        self.canvas.config(cursor='tcross')
-        self.canvas_status.config(
-            text="Draw background region (for augmentation color sampling)",
-            foreground='orange'
-        )
-        self.bg_status_label.config(
-            text="Drawing... (drag to select area)",
-            foreground='orange'
-        )
-        self.bg_button.config(state='disabled')
-
-        logger.info("Started background region drawing mode")
-
-    def _cancel_background_drawing(self):
-        """Cancel background region drawing."""
-        if self.current_rect_id:
-            self.canvas.delete(self.current_rect_id)
-            self.current_rect_id = None
-
-        self.drawing_background = False
-        self.drawing = False
-        self.start_point = None
-
-        # Reset UI
-        self.canvas.config(cursor='crosshair')
-        self.canvas_status.config(
-            text="Draw a box around an object",
-            foreground='gray'
-        )
-        self.bg_status_label.config(
-            text="No background region selected" if not self.background_region else f"✓ Background set",
-            foreground='gray' if not self.background_region else 'green'
-        )
-        self.bg_button.config(state='normal')
-
     def _select_class(self, class_name: str):
         """Handle class selection."""
         if not class_name:
@@ -1187,11 +1083,11 @@ class BboxDrawingDialog:
             logger.error(f"Error extracting segmentation: {e}")
             segmentation = []
 
-        # Add to objects list with background region and segmentation
+        # Add to objects list with segmentation
         obj = {
             'bbox': self.current_bbox,
             'class': self.current_class,
-            'background_region': self.background_region,  # Include shared background region
+            'background_region': None,  # No background region (feature removed)
             'segmentation': segmentation,  # YOLO segmentation format
             'threshold': self.threshold_value,  # Store threshold used
             'threshold_channel': self.threshold_channel.get(),  # Store channel used
@@ -1290,30 +1186,13 @@ class BboxDrawingDialog:
             )
 
     def _redraw_all_bboxes(self):
-        """Redraw all saved bboxes and background region on canvas."""
+        """Redraw all saved bboxes on canvas."""
         # Clear all bbox rectangles
         self.canvas.delete('saved_bbox')
-        self.canvas.delete('background_region')
         self.saved_rect_ids.clear()
-        self.background_rect_id = None
 
         # Redraw image
         self._display_image()
-
-        # Redraw background region if set (YELLOW)
-        if self.background_region:
-            bx1, by1, bx2, by2 = self.background_region
-
-            # Convert to canvas coordinates
-            cbx1, cby1 = self._image_to_canvas_coords(bx1, by1)
-            cbx2, cby2 = self._image_to_canvas_coords(bx2, by2)
-
-            self.background_rect_id = self.canvas.create_rectangle(
-                cbx1, cby1, cbx2, cby2,
-                outline='#CCCC00',  # Yellow
-                width=2,
-                tags='background_region'
-            )
 
         # Redraw all saved bboxes in BLUE
         for obj in self.objects:
