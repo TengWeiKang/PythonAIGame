@@ -2,7 +2,6 @@
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
-from PIL import Image, ImageTk
 import numpy as np
 import cv2
 import os
@@ -11,7 +10,7 @@ import threading
 import logging
 from logging.handlers import RotatingFileHandler
 import uuid
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 # Import services
@@ -22,7 +21,7 @@ from app.services.gemini_service import GeminiService
 from app.services.reference_manager import ReferenceManager
 
 # Import UI components
-from app.ui.components.optimized_canvas import OptimizedCanvas, ChatCanvas
+from app.ui.components.optimized_canvas import OptimizedCanvas
 from app.ui.components.object_selector import ObjectSelector
 
 # Import dialogs
@@ -1053,24 +1052,24 @@ class MainWindow:
             messagebox.showerror("Error", f"Failed to start stream: {e}")
 
     def _on_stop_stream(self):
-        """Handle stop stream button click."""
+        """Handle stop stream button click.
+
+        The last captured frame remains visible on the canvas so users
+        can work with it (save, capture, annotate, etc.). The frame
+        stays accessible through the webcam service until the next stream starts.
+        """
         try:
             self.webcam_service.stop_stream()
             self.start_button.config(state='normal')
             self.stop_button.config(state='disabled')
-            self.save_frame_button.config(state='disabled')
-            self.status_label.config(text="Webcam stream stopped")
+            # Keep save_frame_button enabled so users can save the last frame
+            self.status_label.config(text="Webcam stream stopped - last frame preserved")
             self.connection_label.config(text="⚪ Disconnected", fg=self.COLORS['text_muted'])
 
-            # Clear video canvas
-            self._video_canvas.clear()
+            # DO NOT clear canvas - keep last frame visible for user operations
+            # DO NOT clear current_frame - keep it accessible for save/capture operations
 
-            # Reset camera info labels
-            self.camera_name_label.config(text="Camera: --")
-            self.fps_label.config(text="FPS: --")
-            self.resolution_label.config(text="Resolution: --")
-
-            logger.info("Webcam stream stopped")
+            logger.info("Webcam stream stopped - last frame kept on display")
 
         except Exception as e:
             logger.error(f"Error stopping stream: {e}")
@@ -3003,7 +3002,7 @@ class MainWindow:
                     return []
 
             # Enable debug mode on all canvases
-            self._video_canvas.enable_debug_mode(debug_enabled, model_test_callback)
+            # self._video_canvas.enable_debug_mode(debug_enabled, model_test_callback)
             self._reference_canvas.enable_debug_mode(debug_enabled, model_test_callback)
             self._objects_canvas.enable_debug_mode(debug_enabled, model_test_callback)
 

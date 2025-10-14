@@ -140,22 +140,27 @@ class DataAugmentationDialog:
         )
         self.canvas.pack(fill='both', expand=True)
 
-        # RIGHT: Control panel (30% width)
-        right_frame = ttk.Frame(main_container, width=500)
-        right_frame.pack(side='right', fill='y', padx=(5, 0))
-        right_frame.pack_propagate(False)
+        # RIGHT: Control panel (30% width) - 2 column layout
+        right_frame = ttk.Frame(main_container)
+        right_frame.pack(side='right', fill='both', expand=True, padx=(5, 0))
 
-        # Object selection section
-        self._build_object_selection_section(right_frame)
+        # Create 2 columns within right frame
+        right_left_col = ttk.Frame(right_frame, width=80)
+        right_left_col.pack_propagate(False)
+        right_left_col.pack(side='left', fill='both', expand=True, padx=(0, 5))
 
-        # Generation controls section
-        self._build_generation_controls_section(right_frame)
+        right_right_col = ttk.Frame(right_frame, width=80)
+        right_right_col.pack_propagate(False)
+        right_right_col.pack(side='right', fill='both', expand=True, padx=(5, 0))
 
-        # Generated images list section
-        self._build_generated_images_section(right_frame)
+        # Distribute sections across columns
+        # Left column: Object selection
+        self._build_object_selection_section(right_left_col)
 
-        # Action buttons section
-        self._build_action_buttons_section(right_frame)
+        # Right column: Generation controls, images list, and action buttons
+        self._build_generation_controls_section(right_right_col)
+        self._build_generated_images_section(right_right_col)
+        self._build_action_buttons_section(right_right_col)
 
     def _build_object_selection_section(self, parent):
         """Build object selection section with checkboxes."""
@@ -268,6 +273,72 @@ class DataAugmentationDialog:
             foreground='gray'
         ).pack(side='left')
 
+        # Random object selection settings
+        ttk.Label(
+            controls_frame,
+            text="Object Selection:",
+            font=('Segoe UI', 9, 'bold')
+        ).pack(anchor='w', pady=(10, 5))
+
+        # Random selection checkbox
+        self.use_random_selection_var = tk.BooleanVar(value=True)
+        random_checkbox = ttk.Checkbutton(
+            controls_frame,
+            text="Random Object Selection",
+            variable=self.use_random_selection_var,
+            command=self._on_random_selection_toggled
+        )
+        random_checkbox.pack(anchor='w', pady=(0, 5))
+
+        ttk.Label(
+            controls_frame,
+            text="(Each selected object type will be placed 0-5 times independently)",
+            font=('Segoe UI', 8),
+            foreground='gray'
+        ).pack(anchor='w', padx=(20, 0), pady=(0, 10))
+
+        # Min objects row
+        min_obj_row = ttk.Frame(controls_frame)
+        min_obj_row.pack(fill='x', pady=(0, 5))
+
+        ttk.Label(
+            min_obj_row,
+            text="Min copies per object type:",
+            font=('Segoe UI', 9)
+        ).pack(side='left', padx=(20, 5))
+
+        self.min_objects_var = tk.IntVar(value=1)
+        self.min_objects_spinbox = ttk.Spinbox(
+            min_obj_row,
+            from_=0,
+            to=5,
+            textvariable=self.min_objects_var,
+            width=8,
+            font=('Segoe UI', 9)
+        )
+        self.min_objects_spinbox.pack(side='left')
+
+        # Max objects row
+        max_obj_row = ttk.Frame(controls_frame)
+        max_obj_row.pack(fill='x', pady=(0, 10))
+
+        ttk.Label(
+            max_obj_row,
+            text="Max copies per object type:",
+            font=('Segoe UI', 9)
+        ).pack(side='left', padx=(20, 5))
+
+        self.max_objects_var = tk.IntVar(value=5)
+        self.max_objects_spinbox = ttk.Spinbox(
+            max_obj_row,
+            from_=0,
+            to=5,
+            textvariable=self.max_objects_var,
+            width=8,
+            font=('Segoe UI', 9)
+        )
+        self.max_objects_spinbox.pack(side='left')
+
         # Debug mode: Same location checkbox
         # ttk.Label(
         #     controls_frame,
@@ -365,6 +436,16 @@ class DataAugmentationDialog:
     def _on_source_changed(self):
         """Handle background source change."""
         logger.info(f"Background source changed to: {self.source_var.get()}")
+
+    def _on_random_selection_toggled(self):
+        """Handle random object selection checkbox toggle."""
+        use_random = self.use_random_selection_var.get()
+        state = 'normal' if use_random else 'disabled'
+
+        self.min_objects_spinbox.config(state=state)
+        self.max_objects_spinbox.config(state=state)
+
+        logger.info(f"Random object selection: {'enabled' if use_random else 'disabled'}")
 
     def _load_background(self):
         """Load background image based on selected source."""
@@ -714,6 +795,45 @@ class DataAugmentationDialog:
         # Get number of generations
         num_generations = self.num_generations_var.get()
 
+        # Get random selection settings
+        use_random_selection = self.use_random_selection_var.get()
+        min_objects = self.min_objects_var.get()
+        max_objects = self.max_objects_var.get()
+
+        # Validate min/max settings if random selection is enabled
+        if use_random_selection:
+            if min_objects > max_objects:
+                messagebox.showwarning(
+                    "Invalid Settings",
+                    "Minimum copies must be less than or equal to maximum copies.",
+                    parent=self.dialog
+                )
+                return
+
+            if min_objects < 0:
+                messagebox.showwarning(
+                    "Invalid Settings",
+                    "Minimum copies must be at least 0.",
+                    parent=self.dialog
+                )
+                return
+
+            if max_objects > 5:
+                messagebox.showwarning(
+                    "Invalid Settings",
+                    "Maximum copies cannot exceed 5.",
+                    parent=self.dialog
+                )
+                return
+
+            if max_objects < 0:
+                messagebox.showwarning(
+                    "Invalid Settings",
+                    "Maximum copies must be at least 0.",
+                    parent=self.dialog
+                )
+                return
+
         # Disable generate button during generation
         self.generate_button.config(state='disabled')
         self.generation_status.config(text="Generating...", foreground='orange')
@@ -728,7 +848,10 @@ class DataAugmentationDialog:
                 self.background_image,
                 selected_objects,
                 num_generations,
-                progress_window=progress_window
+                progress_window=progress_window,
+                use_random_selection=use_random_selection,
+                min_objects=min_objects,
+                max_objects=max_objects
             )
 
             # Populate generated images list
@@ -761,7 +884,9 @@ class DataAugmentationDialog:
             self.generate_button.config(state='normal')
 
     def _place_objects_randomly(self, background: np.ndarray, selected_objects: List,
-                                num_generations: int, progress_window: Optional[tk.Toplevel] = None) -> List[Dict]:
+                                num_generations: int, progress_window: Optional[tk.Toplevel] = None,
+                                use_random_selection: bool = False, min_objects: int = 1,
+                                max_objects: Optional[int] = None) -> List[Dict]:
         """Generate multiple augmented images with random object placement.
 
         Args:
@@ -769,6 +894,9 @@ class DataAugmentationDialog:
             selected_objects: List of TrainingObject instances to place
             num_generations: Number of augmented images to generate
             progress_window: Optional Toplevel window for progress tracking
+            use_random_selection: If True, randomly select subset of objects per image
+            min_objects: Minimum objects per image (only used if use_random_selection=True)
+            max_objects: Maximum objects per image (None = all selected, only used if use_random_selection=True)
 
         Returns:
             List of dicts with 'image', 'labels', 'filename' keys
@@ -776,13 +904,55 @@ class DataAugmentationDialog:
         augmented_data = []
         h, w = background.shape[:2]
 
+        # Statistics tracking for per-object-type placement counts
+        object_placement_stats = {obj.label: [] for obj in selected_objects}
+
+        # Set default max_objects if not specified
+        if max_objects is None:
+            max_objects = len(selected_objects)
+
+        logger.info(
+            f"Starting generation: {num_generations} images, "
+            f"{'random placement per object type' if use_random_selection else 'all objects once'}, "
+            f"range: {min_objects}-{max_objects} copies per object type"
+        )
+
         for gen_idx in range(num_generations):
+            # Determine which objects to place in this image
+            if use_random_selection:
+                # For each object type, decide how many copies to place
+                objects_to_place = []
+                placement_summary = {}
+
+                for obj in selected_objects:
+                    num_copies = random.randint(min_objects, max_objects)
+                    placement_summary[obj.label] = num_copies
+
+                    # Track statistics
+                    object_placement_stats[obj.label].append(num_copies)
+
+                    # Add this object num_copies times to the placement list
+                    for _ in range(num_copies):
+                        objects_to_place.append(obj)
+
+                num_to_place = len(objects_to_place)
+
+                logger.debug(
+                    f"Image {gen_idx + 1}: Placing {num_to_place} total objects - "
+                    f"{', '.join([f'{label}:{count}' for label, count in placement_summary.items()])}"
+                )
+            else:
+                # Use all selected objects once (original behavior)
+                objects_to_place = selected_objects
+                num_to_place = len(selected_objects)
+
             # Update progress window if provided
             if progress_window:
                 try:
                     current = gen_idx + 1
+                    total_objects_count = len(objects_to_place)
                     progress_window.status_label.config(
-                        text=f"Generating {current}/{num_generations}..."
+                        text=f"Generating {current}/{num_generations} (placing {total_objects_count} objects)..."
                     )
                     progress_window.progress_bar['value'] = current
                     percent = int((current / num_generations) * 100)
@@ -790,13 +960,14 @@ class DataAugmentationDialog:
                     progress_window.update()
                 except Exception as e:
                     logger.warning(f"Error updating progress window: {e}")
+
             # Create copy of background
             aug_image = background.copy()
             labels = []  # YOLO format labels
 
             placed_bboxes = []  # Track placed object positions for collision detection
 
-            for obj in selected_objects:
+            for obj in objects_to_place:
                 # ============================================================
                 # TEMPORARILY DISABLED: Rotation for testing purposes
                 # To re-enable rotation, uncomment the line below and comment the fixed angle line
@@ -907,12 +1078,30 @@ class DataAugmentationDialog:
             augmented_data.append({
                 'image': aug_image,
                 'labels': labels,
-                'filename': f'augmented_{gen_idx:03d}.jpg'
+                'filename': f'augmented_{gen_idx:03d}.jpg',
+                'num_objects': num_to_place  # Store for display in listbox
             })
 
             # Log progress every 10 generations
             if (gen_idx + 1) % 10 == 0 or (gen_idx + 1) == num_generations:
                 logger.info(f"Generated {gen_idx + 1}/{num_generations} augmented images")
+
+        # Log statistics if random selection was used
+        if use_random_selection and object_placement_stats:
+            logger.info(f"\nGeneration complete! Per-object-type placement statistics:")
+            logger.info(f"Generated {num_generations} augmented images")
+            logger.info(f"Object placement counts:")
+
+            for obj_label, counts in object_placement_stats.items():
+                if counts:
+                    avg_count = sum(counts) / len(counts)
+                    min_count = min(counts)
+                    max_count = max(counts)
+                    total_placed = sum(counts)
+                    logger.info(
+                        f"  - {obj_label}: avg {avg_count:.1f} copies/image "
+                        f"(range {min_count}-{max_count}, total {total_placed} placed)"
+                    )
 
         return augmented_data
 
@@ -1309,8 +1498,17 @@ class DataAugmentationDialog:
         self.images_listbox.delete(0, tk.END)
 
         for data in self.augmented_data:
-            num_objects = len(data['labels'])
-            self.images_listbox.insert(tk.END, f"{data['filename']} ({num_objects} objects)")
+            # Use the actual number of objects placed (which might differ from labels if placement failed)
+            num_objects = data.get('num_objects', len(data['labels']))
+            actual_placed = len(data['labels'])
+
+            # Show both intended and actually placed if they differ
+            if num_objects != actual_placed:
+                display_text = f"{data['filename']} ({actual_placed}/{num_objects} objects placed)"
+            else:
+                display_text = f"{data['filename']} ({num_objects} objects)"
+
+            self.images_listbox.insert(tk.END, display_text)
 
     def _on_image_selected(self, event):
         """Handle image selection from listbox - display with contours."""

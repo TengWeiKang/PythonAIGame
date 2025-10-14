@@ -206,13 +206,18 @@ class WebcamService:
         return self._is_streaming
 
     def _cleanup(self):
-        """Clean up camera resources."""
+        """Clean up camera resources.
+
+        Note: The last captured frame (_current_frame) is intentionally preserved
+        so users can save, capture, or annotate it after stopping the stream.
+        The frame will be replaced when a new stream starts.
+        """
         if self._capture:
             self._capture.release()
             self._capture = None
 
-        with self._frame_lock:
-            self._current_frame = None
+        # DO NOT clear _current_frame - preserve last frame for user operations
+        # It will be naturally replaced when the next stream starts
 
         self._frame_callback = None
         self._camera_name = None

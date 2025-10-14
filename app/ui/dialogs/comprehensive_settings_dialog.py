@@ -10,7 +10,6 @@ import logging
 from typing import Callable, Optional, Dict, Any, List
 import cv2
 from PIL import Image, ImageTk
-import time
 
 logger = logging.getLogger(__name__)
 
