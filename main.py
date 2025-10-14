@@ -22,7 +22,6 @@ from app.services.reference_manager import ReferenceManager
 
 # Import UI components
 from app.ui.components.optimized_canvas import OptimizedCanvas
-from app.ui.components.object_selector import ObjectSelector
 
 # Import dialogs
 from app.ui.dialogs.comprehensive_settings_dialog import ComprehensiveSettingsDialog
@@ -141,8 +140,6 @@ class MainWindow:
         # State variables
         self._training_image: Optional[np.ndarray] = None
         self._selected_bbox: Optional[tuple] = None
-        self._object_selector: Optional[ObjectSelector] = None
-        self._temp_selector: Optional[ObjectSelector] = None  # Temporary selector for multi-canvas selection
 
         # Live detection state
         self._live_detection_active = False
@@ -676,13 +673,6 @@ class MainWindow:
         )
         self._objects_canvas.pack(fill='both', expand=True)
         self._objects_canvas.set_render_quality('high')
-        
-        # Initialize object selector (DEPRECATED - now using BboxDrawingDialog)
-        # Kept for backward compatibility, but no longer actively used
-        self._object_selector = ObjectSelector(
-            self._objects_canvas,
-            lambda bbox: None  # Dummy callback, not used anymore
-        )
         
         # Status label
         status_frame = tk.Frame(parent, bg=self.COLORS['bg_secondary'], height=30)
@@ -1873,16 +1863,10 @@ class MainWindow:
 
     def _cleanup_multi_canvas_selection(self):
         """Clean up all active canvas selectors and remove visual feedback."""
-        if hasattr(self, '_active_selectors'):
-            for selector in self._active_selectors:
-                selector.deactivate()
-            self._active_selectors = []
-
+        
         # Remove visual feedback (green borders)
         for canvas in [self._video_canvas, self._reference_canvas, self._objects_canvas]:
             canvas.config(highlightthickness=0)
-
-        self._selection_active = False
 
     # DEPRECATED: Old object selection method (replaced by BboxDrawingDialog)
     # Kept for reference but no longer used
