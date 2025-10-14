@@ -1978,17 +1978,86 @@ class MainWindow:
         except Exception as e:
             logger.error(f"Error editing object: {e}")
 
+    def _create_delete_progress_window(self, total_objects: int) -> tk.Toplevel:
+        """Create a progress window for object deletion.
+
+        This window provides visual feedback during batch object deletion,
+        showing real-time progress as each object is removed from the training service.
+
+        Args:
+            total_objects: Total number of objects to delete
+
+        Returns:
+            Toplevel window with status_label, progress_bar, and percent_label attributes
+        """
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("Deleting Training Objects")
+        progress_win.geometry("450x150")
+        progress_win.transient(self.root)
+        progress_win.grab_set()
+
+        # Center on main window
+        progress_win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 450) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 150) // 2
+        progress_win.geometry(f"+{x}+{y}")
+
+        # Prevent closing during operation
+        progress_win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        # Progress widgets
+        progress_frame = ttk.Frame(progress_win, padding=20)
+        progress_frame.pack(fill='both', expand=True)
+
+        status_label = ttk.Label(
+            progress_frame,
+            text=f"Deleting 0/{total_objects} objects...",
+            font=('Segoe UI', 11, 'bold')
+        )
+        status_label.pack(pady=(0, 15))
+
+        progress_bar = ttk.Progressbar(
+            progress_frame,
+            mode='determinate',
+            length=400,
+            maximum=total_objects
+        )
+        progress_bar.pack(pady=(0, 10))
+
+        percent_label = ttk.Label(
+            progress_frame,
+            text="0%",
+            font=('Segoe UI', 10),
+            foreground='gray'
+        )
+        percent_label.pack()
+
+        # Store widgets as attributes
+        progress_win.status_label = status_label
+        progress_win.progress_bar = progress_bar
+        progress_win.percent_label = percent_label
+
+        progress_win.update()
+
+        logger.debug(f"Created deletion progress window for {total_objects} objects")
+
+        return progress_win
+
     def _delete_selected_objects(self):
-        """Delete all checked objects in batch.
+        """Delete all checked objects in batch with progress feedback.
 
         Handles multi-delete functionality by deleting all objects that have been
         checked via the checkbox system. Shows confirmation dialog with count.
+        For multiple objects (>1), displays a progress window with real-time updates.
 
         Edge cases handled:
         - No objects checked: Shows warning
         - Invalid object indices: Validates before deletion
         - All objects selected: Confirms and deletes all
+        - Single object: No progress dialog (fast operation)
+        - Multiple objects: Progress dialog with updates
         """
+        progress_window = None
         try:
             # Check if any objects are checked
             if not self.checked_objects:
@@ -2015,19 +2084,52 @@ class MainWindow:
             if not messagebox.askyesno("Confirm Delete", confirmation_msg):
                 return
 
-            # Delete all checked objects
+            # Log deletion start
+            logger.info(f"Starting deletion of {count} training objects")
+
+            # Create progress window if deleting multiple objects
+            if count > 1:
+                progress_window = self._create_delete_progress_window(count)
+
+            # Delete all checked objects with progress updates
             deleted_count = 0
             failed_count = 0
-            for obj in objects_to_delete:
+            for idx, obj in enumerate(objects_to_delete):
                 try:
+                    current = idx + 1
+                    total = count
+
+                    # Update progress before deletion
+                    if progress_window:
+                        progress_window.status_label.config(
+                            text=f"Deleting {current}/{total} objects..."
+                        )
+                        progress_window.progress_bar['value'] = current
+                        percent = int((current / total) * 100)
+                        progress_window.percent_label.config(text=f"{percent}%")
+                        progress_window.update()
+
+                    # Delete the object
                     self.training_service.delete_object(obj.object_id)
                     deleted_count += 1
+
+                    # Log individual deletion
+                    logger.info(f"Deleted object {current}/{total}: {obj.object_id} ({obj.label})")
+
                 except Exception as e:
                     logger.error(f"Failed to delete object {obj.object_id}: {e}")
                     failed_count += 1
 
+            # Log deletion completion
+            logger.info(f"Deletion complete: {deleted_count} objects removed, {failed_count} failed")
+
             # Clear checked objects set
             self.checked_objects.clear()
+
+            # Close progress window before showing success message
+            if progress_window:
+                progress_window.destroy()
+                progress_window = None
 
             # Refresh the list
             self._refresh_objects_list()
@@ -2035,7 +2137,11 @@ class MainWindow:
             # Update status with results
             if failed_count == 0:
                 self.status_label.config(text=f"Successfully deleted {deleted_count} object(s)")
-                logger.info(f"Deleted {deleted_count} objects")
+                # Show success message
+                if deleted_count == 1:
+                    messagebox.showinfo("Success", "Object deleted successfully.")
+                else:
+                    messagebox.showinfo("Success", f"Successfully deleted {deleted_count} objects.")
             else:
                 self.status_label.config(
                     text=f"Deleted {deleted_count} object(s), {failed_count} failed"
@@ -2046,9 +2152,21 @@ class MainWindow:
                     f"Successfully deleted {deleted_count} object(s)\nFailed to delete {failed_count} object(s)"
                 )
 
+            # Update objects count display
+            remaining_objects = len(self.training_service.get_all_objects())
+            self.objects_status_label.config(text=f"Total: {remaining_objects} objects")
+
         except Exception as e:
-            logger.error(f"Error deleting objects: {e}")
+            logger.error(f"Error deleting objects: {e}", exc_info=True)
             messagebox.showerror("Error", f"Failed to delete objects: {e}")
+
+        finally:
+            # Ensure progress window is always destroyed
+            if progress_window:
+                try:
+                    progress_window.destroy()
+                except Exception as e:
+                    logger.warning(f"Error destroying delete progress window: {e}")
 
     def _view_selected_object(self):
         """View selected object image in the Objects tab canvas.

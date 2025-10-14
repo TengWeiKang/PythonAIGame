@@ -444,7 +444,7 @@ class GeminiService:
         enhanced = f"{base_prompt}\n\n"
 
         # Wrap all detection/reference data with label
-        enhanced += "=== REFERENCE MATERIALS ===\n\n"
+        enhanced += "=== REFERENCE MATERIALS ===\n"
 
         # Add available class names if provided
         if class_names and len(class_names) > 0:
