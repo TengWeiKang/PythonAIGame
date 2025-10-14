@@ -252,7 +252,12 @@ class MainWindow:
         )
 
         if api_key:
-            threading.Thread(target=self.gemini_service.initialize, daemon=True).start()
+            def init_gemini():
+                self.gemini_service.initialize()
+                # Schedule status update after initialization completes
+                self.root.after(0, self._update_chat_status)
+
+            threading.Thread(target=init_gemini, daemon=True).start()
 
         # Reference manager
         self.reference_manager = ReferenceManager(data_dir="data/reference")
@@ -670,7 +675,7 @@ class MainWindow:
             bd=2
         )
         self._objects_canvas.pack(fill='both', expand=True)
-        self._objects_canvas.set_render_quality('medium')
+        self._objects_canvas.set_render_quality('high')
         
         # Initialize object selector (DEPRECATED - now using BboxDrawingDialog)
         # Kept for backward compatibility, but no longer actively used
@@ -802,7 +807,7 @@ class MainWindow:
         panel = tk.Frame(bg=self.COLORS['bg_secondary'])
 
         # Enhanced header with status indicators
-        header_frame = tk.Frame(panel, bg=self.COLORS['bg_tertiary'], height=50)
+        header_frame = tk.Frame(panel, bg=self.COLORS['bg_tertiary'], height=58)
         header_frame.pack(fill='x')
         header_frame.pack_propagate(False)
 
@@ -832,6 +837,33 @@ class MainWindow:
         controls_frame = tk.Frame(header_frame, bg=self.COLORS['bg_tertiary'])
         controls_frame.pack(side='right', fill='y', padx=15, pady=10)
 
+        # Test Connection button
+        test_btn = tk.Button(
+            controls_frame,
+            text="Test Connection",
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['text_primary'],
+            font=('Segoe UI', 9),
+            borderwidth=0,
+            padx=12,
+            pady=6,
+            command=self._test_gemini_connection,
+            cursor='hand2',
+            relief='flat'
+        )
+        test_btn.pack(side='right', padx=(0, 8))
+
+        # Hover effects for test button
+        def on_test_enter(e):
+            test_btn.configure(bg=self.COLORS['bg_primary'])
+
+        def on_test_leave(e):
+            test_btn.configure(bg=self.COLORS['bg_secondary'])
+
+        test_btn.bind('<Enter>', on_test_enter)
+        test_btn.bind('<Leave>', on_test_leave)
+
+        # Clear Chat button
         clear_btn = tk.Button(
             controls_frame,
             text="Clear Chat",
@@ -1001,8 +1033,9 @@ class MainWindow:
         self._typing_indicator = None
         self._last_message_id = 0
 
-        # Add welcome message
+        # Add welcome message and update initial status
         self.root.after(100, self._add_welcome_message)
+        self.root.after(200, self._update_chat_status)
 
         return panel
     
@@ -2902,6 +2935,86 @@ class MainWindow:
         """Handle mouse wheel scrolling on chat input."""
         return None  # Allow default scrolling
 
+    def _update_chat_status(self):
+        """Update chat status indicator based on Gemini service status."""
+        try:
+            # Check if chat status label exists yet (UI may not be fully built)
+            if not hasattr(self, '_chat_status_label'):
+                return
+
+            status_info = self.gemini_service.get_connection_status()
+            status = status_info['status']
+            last_error = status_info['last_error']
+
+            # Update status text and color based on connection status
+            if status == "ready":
+                self._chat_status_label.config(
+                    text="● Ready",
+                    fg=self.COLORS['success']
+                )
+            elif status == "connecting":
+                self._chat_status_label.config(
+                    text="● Connecting...",
+                    fg=self.COLORS['warning']
+                )
+            elif status == "error":
+                error_text = f"● Error: {last_error}" if last_error else "● Connection Error"
+                self._chat_status_label.config(
+                    text=error_text[:50],  # Truncate long errors
+                    fg=self.COLORS['error']
+                )
+            elif status == "not_configured":
+                self._chat_status_label.config(
+                    text="● Not Configured",
+                    fg=self.COLORS['warning']
+                )
+            else:
+                self._chat_status_label.config(
+                    text="● Unknown Status",
+                    fg=self.COLORS['text_muted']
+                )
+
+            # Update the _gemini_configured flag
+            self._gemini_configured = status == "ready"
+
+        except Exception as e:
+            logger.error(f"Error updating chat status: {e}")
+
+    def _test_gemini_connection(self):
+        """Test connection to Gemini API and update status."""
+        try:
+            # Show connecting status
+            self._chat_status_label.config(
+                text="● Testing connection...",
+                fg=self.COLORS['warning']
+            )
+            self.status_label.config(text="Testing Gemini API connection...")
+
+            def test_connection():
+                success, error = self.gemini_service.test_connection()
+                if success:
+                    self.root.after(0, lambda: self._add_chat_message(
+                        "System",
+                        "Connection test successful! Gemini API is ready."
+                    ))
+                    self.root.after(0, lambda: self.status_label.config(text="Connection test successful"))
+                else:
+                    error_msg = f"Connection test failed: {error}"
+                    self.root.after(0, lambda: self._add_chat_message(
+                        "System",
+                        error_msg
+                    ))
+                    self.root.after(0, lambda: self.status_label.config(text="Connection test failed"))
+
+                # Update status regardless of result
+                self.root.after(0, lambda: self._update_chat_status())
+
+            threading.Thread(target=test_connection, daemon=True).start()
+
+        except Exception as e:
+            logger.error(f"Error testing connection: {e}")
+            self._add_chat_message("System", f"Error testing connection: {str(e)}")
+
     # ========== SETTINGS DIALOG ==========
 
     def _open_settings(self):
@@ -2947,12 +3060,31 @@ class MainWindow:
                 iou=new_config.get('detection_iou_threshold')
             )
 
+            # Update Gemini service configuration
+            old_api_key = self.config.get('gemini_api_key', '')
+            new_api_key = new_config.get('gemini_api_key', '')
+            api_key_changed = old_api_key != new_api_key
+
             self.gemini_service.update_config(
                 model=new_config.get('gemini_model'),
                 temperature=new_config.get('gemini_temperature'),
                 max_tokens=new_config.get('gemini_max_tokens'),
-                persona=new_config.get('chatbot_persona', '')
+                persona=new_config.get('chatbot_persona', ''),
+                api_key=new_api_key if api_key_changed else None
             )
+
+            # If API key changed and is now valid, reinitialize in background
+            if api_key_changed and new_api_key and new_api_key.strip():
+                def reinit_gemini():
+                    success = self.gemini_service.reinitialize()
+                    if success:
+                        self.root.after(0, lambda: self._update_chat_status())
+                        logger.info("Gemini service reinitialized successfully")
+                    else:
+                        self.root.after(0, lambda: self._update_chat_status())
+                        logger.warning("Gemini service reinitialization failed")
+
+                threading.Thread(target=reinit_gemini, daemon=True).start()
 
             # Update training service config (for augmentation settings)
             self.training_service.config = new_config
