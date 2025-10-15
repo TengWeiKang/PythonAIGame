@@ -169,6 +169,10 @@ class MainWindow:
         # Start video stream update loop
         self._update_video_stream()
 
+        # Start Gemini initialization status polling (main thread)
+        if self.config.get('gemini_api_key', ''):
+            self._check_gemini_init_status()
+
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from file.
 
@@ -248,13 +252,24 @@ class MainWindow:
             persona=self.config.get('chatbot_persona', '')
         )
 
+        # Initialize Gemini status flags (thread-safe communication)
+        self.gemini_init_complete = False
+        self.gemini_init_error = None
+
         if api_key:
             def init_gemini():
-                self.gemini_service.initialize()
-                # Schedule status update after initialization completes
-                self.root.after(0, self._update_chat_status)
+                """Background thread to initialize Gemini service."""
+                try:
+                    self.gemini_service.initialize()
+                    self.gemini_init_complete = True
+                    self.gemini_init_error = None
+                    logger.info("Gemini service initialized successfully")
+                except Exception as e:
+                    self.gemini_init_complete = True
+                    self.gemini_init_error = str(e)
+                    logger.error(f"Gemini initialization error: {e}")
 
-            threading.Thread(target=init_gemini, daemon=True).start()
+            threading.Thread(target=init_gemini, daemon=True, name="init_gemini").start()
 
         # Reference manager
         self.reference_manager = ReferenceManager(data_dir="data/reference")
@@ -746,39 +761,39 @@ class MainWindow:
         # Add click-to-view: single click on object displays it
         self._objects_listbox.bind('<<ListboxSelect>>', self._on_listbox_item_clicked)
         
-        # Management buttons
-        buttons_frame = tk.Frame(list_frame, bg=self.COLORS['bg_secondary'], height=40)
+        # Management buttons (increased height to prevent overflow)
+        buttons_frame = tk.Frame(list_frame, bg=self.COLORS['bg_secondary'], height=50)
         buttons_frame.pack(fill='x', pady=(5, 0))
         buttons_frame.pack_propagate(False)
 
-        # Selection control buttons
+        # Selection control buttons (reduced padding to fit all buttons)
         ttk.Button(
             buttons_frame,
             text="☑ Select All",
             style='Secondary.TButton',
             command=self._select_all_objects
-        ).pack(side='left', padx=(5, 2), pady=5)
+        ).pack(side='left', padx=(3, 1), pady=5)
 
         ttk.Button(
             buttons_frame,
             text="☐ Deselect All",
             style='Secondary.TButton',
             command=self._deselect_all_objects
-        ).pack(side='left', padx=2, pady=5)
+        ).pack(side='left', padx=1, pady=5)
 
         ttk.Button(
             buttons_frame,
             text="✏️ Edit",
             style='Secondary.TButton',
             command=self._edit_selected_object
-        ).pack(side='left', padx=2, pady=5)
+        ).pack(side='left', padx=1, pady=5)
 
         ttk.Button(
             buttons_frame,
             text="🗑️ Delete",
             style='Secondary.TButton',
             command=self._delete_selected_objects
-        ).pack(side='left', padx=2, pady=5)
+        ).pack(side='left', padx=1, pady=5)
 
         # Note: View button removed - clicking on an item in the list now displays it automatically
 
@@ -787,7 +802,7 @@ class MainWindow:
             text="🚀 Train Model",
             style='Modern.TButton',
             command=self._train_model_with_all_objects
-        ).pack(side='right', padx=(2, 5), pady=5)
+        ).pack(side='right', padx=(1, 3), pady=5)
         
         # Load initial objects
         self._refresh_objects_list()
@@ -2549,19 +2564,18 @@ class MainWindow:
                             ref_detections = self.inference_service.detect(reference)
                             ref_height, ref_width = reference.shape[:2]
 
-                        # ALWAYS use compare_with_text_only to show BOTH image sections
+                        # ALWAYS use compare_images with image=None to show BOTH image sections
                         # This ensures the prompt always displays both reference and video stream sections,
                         # with "Status: Not provided" for any missing images
-                        response = self.gemini_service.compare_with_text_only(
+                        response = self.gemini_service.compare_images(
+                            reference_image=None,  # Text-only mode (YOLO detection data only)
+                            current_image=None,    # Text-only mode (YOLO detection data only)
                             prompt=message,
-                            ref_detections=ref_detections,
-                            curr_detections=frame_detections,
                             class_names=class_names,
+                            ref_detections=ref_detections,
                             ref_width=ref_width,
                             ref_height=ref_height,
-                            curr_width=frame_width,
-                            curr_height=frame_height,
-                            curr_is_video_frame=True  # Current frame is from webcam
+                            curr_detections=frame_detections
                         )
 
                     elif analysis_mode == 'gemini_auto':
@@ -2657,10 +2671,10 @@ class MainWindow:
 
         # Pattern to match markdown syntax (order matters for nested styles)
         # Matches: ***text***, **text**, __text__, *text*, _text_, ~~text~~
-        pattern = r'(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\*[^*]+\*|_[^_]+_)'
+        pattern = r'(~~.+?~~|(?:\*\*\*|___).+?(?:\*\*\*|___)|(?:\*\*|__).+?(?:\*\*|__)|(?:\*|_).+?(?:\*|_))'
 
         # Split text by markdown patterns while keeping the delimiters
-        parts = re.split(pattern, text)
+        parts = re.split(pattern, text, flags=re.DOTALL)
 
         for part in parts:
             if not part:  # Skip empty strings
@@ -2871,59 +2885,6 @@ class MainWindow:
         except Exception as e:
             logger.error(f"Error adding chat message: {e}")
 
-    def _insert_markdown(self, text_widget: tk.Text, markdown_text: str):
-        """Parse and insert markdown-formatted text into Text widget.
-
-        Args:
-            text_widget: The Text widget to insert into
-            markdown_text: Markdown-formatted text
-        """
-        import re
-
-        # Split by code blocks first
-        parts = re.split(r'```(.*?)```', markdown_text, flags=re.DOTALL)
-
-        for i, part in enumerate(parts):
-            if i % 2 == 1:  # Code block
-                text_widget.insert('end', part, 'code')
-                continue
-
-            # Process inline markdown
-            pos = 0
-            while pos < len(part):
-                # Check for **bold**
-                bold_match = re.match(r'\*\*(.*?)\*\*', part[pos:])
-                if bold_match:
-                    text_widget.insert('end', bold_match.group(1), 'bold')
-                    pos += len(bold_match.group(0))
-                    continue
-
-                # Check for *italic*
-                italic_match = re.match(r'\*(.*?)\*', part[pos:])
-                if italic_match:
-                    text_widget.insert('end', italic_match.group(1), 'italic')
-                    pos += len(italic_match.group(0))
-                    continue
-
-                # Check for `code`
-                code_match = re.match(r'`(.*?)`', part[pos:])
-                if code_match:
-                    text_widget.insert('end', code_match.group(1), 'code')
-                    pos += len(code_match.group(0))
-                    continue
-
-                # Check for headers (# at start of line)
-                if pos == 0 or part[pos-1] == '\n':
-                    header_match = re.match(r'#+\s+(.*?)(\n|$)', part[pos:])
-                    if header_match:
-                        text_widget.insert('end', header_match.group(1) + '\n', 'header')
-                        pos += len(header_match.group(0))
-                        continue
-
-                # Regular character
-                text_widget.insert('end', part[pos])
-                pos += 1
-
     def _add_welcome_message(self):
         """Add a welcome message to the chat on startup."""
         try:
@@ -3036,6 +2997,26 @@ class MainWindow:
     def _on_chat_input_mousewheel(self, event):
         """Handle mouse wheel scrolling on chat input."""
         return None  # Allow default scrolling
+
+    def _check_gemini_init_status(self):
+        """Poll Gemini initialization status from main thread.
+
+        This method runs on the main thread and checks the status flags
+        set by the background initialization thread. This ensures thread-safe
+        GUI updates without calling Tkinter methods from background threads.
+        """
+        if not self.gemini_init_complete:
+            # Still initializing, check again in 100ms
+            self.root.after(100, self._check_gemini_init_status)
+            return
+
+        # Initialization complete (success or error)
+        if self.gemini_init_error:
+            # Log the error, but don't show it to the user yet
+            logger.error(f"Gemini initialization failed: {self.gemini_init_error}")
+
+        # Update the chat status regardless of success/failure
+        self._update_chat_status()
 
     def _update_chat_status(self):
         """Update chat status indicator based on Gemini service status."""
@@ -3220,9 +3201,10 @@ class MainWindow:
     # ========== DEBUG MODE ==========
 
     def _update_debug_mode(self):
-        """Update debug mode on all canvases based on config."""
+        """Enable debug mode on all canvases (always enabled by default)."""
         try:
-            debug_enabled = self.config.get('debug_mode', False)
+            # Debug mode is always enabled for better development experience
+            debug_enabled = True
 
             # Model test callback for running YOLO inference
             def model_test_callback(image):
@@ -3240,7 +3222,7 @@ class MainWindow:
             self._reference_canvas.enable_debug_mode(debug_enabled, model_test_callback)
             self._objects_canvas.enable_debug_mode(debug_enabled, model_test_callback)
 
-            logger.info(f"Debug mode {'enabled' if debug_enabled else 'disabled'} on all canvases")
+            logger.info("Debug mode enabled on all canvases")
 
         except Exception as e:
             logger.error(f"Error updating debug mode: {e}")

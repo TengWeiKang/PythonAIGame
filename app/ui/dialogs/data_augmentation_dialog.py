@@ -163,7 +163,7 @@ class DataAugmentationDialog:
         self._build_action_buttons_section(right_right_col)
 
     def _build_object_selection_section(self, parent):
-        """Build object selection section with checkboxes."""
+        """Build object selection section with checkboxes and scrolling support."""
         selection_frame = ttk.LabelFrame(parent, text="Select Objects to Place", padding=10)
         selection_frame.pack(fill='both', expand=True, pady=(0, 10))
 
@@ -180,20 +180,30 @@ class DataAugmentationDialog:
         list_container.pack(fill='both', expand=True)
 
         # Create canvas for scrolling
-        scroll_canvas = tk.Canvas(list_container, height=200)
-        scrollbar = ttk.Scrollbar(list_container, orient='vertical', command=scroll_canvas.yview)
-        scroll_frame = ttk.Frame(scroll_canvas)
+        self.objects_scroll_canvas = tk.Canvas(list_container, height=300, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_container, orient='vertical', command=self.objects_scroll_canvas.yview)
+        scroll_frame = ttk.Frame(self.objects_scroll_canvas)
 
         scroll_frame.bind(
             '<Configure>',
-            lambda e: scroll_canvas.configure(scrollregion=scroll_canvas.bbox('all'))
+            lambda e: self.objects_scroll_canvas.configure(scrollregion=self.objects_scroll_canvas.bbox('all'))
         )
 
-        scroll_canvas.create_window((0, 0), window=scroll_frame, anchor='nw')
-        scroll_canvas.configure(yscrollcommand=scrollbar.set)
+        self.objects_scroll_canvas.create_window((0, 0), window=scroll_frame, anchor='nw')
+        self.objects_scroll_canvas.configure(yscrollcommand=scrollbar.set)
 
-        scroll_canvas.pack(side='left', fill='both', expand=True)
+        self.objects_scroll_canvas.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
+
+        # Enable mousewheel scrolling when mouse enters/leaves canvas
+        self.objects_scroll_canvas.bind(
+            '<Enter>',
+            lambda e: self.objects_scroll_canvas.bind_all('<MouseWheel>', self._on_objects_mousewheel)
+        )
+        self.objects_scroll_canvas.bind(
+            '<Leave>',
+            lambda e: self.objects_scroll_canvas.unbind_all('<MouseWheel>')
+        )
 
         # Create checkboxes for each object
         # Store both BooleanVar and widget reference for proper visual updates
@@ -551,6 +561,17 @@ class DataAugmentationDialog:
             data['widget'].deselect()  # Directly deselect widget (updates both var and visual)
             count += 1
         logger.info(f"Deselected all objects ({count} checkboxes updated)")
+
+    def _on_objects_mousewheel(self, event):
+        """Handle mousewheel scrolling for the objects selection canvas.
+
+        Args:
+            event: Mouse event containing delta information
+        """
+        # Scroll the canvas based on mousewheel direction
+        # event.delta is positive for scroll up, negative for scroll down
+        # Divide by 120 to get scroll units (standard Windows behavior)
+        self.objects_scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _create_progress_window(self, total_generations: int) -> tk.Toplevel:
         """Create a progress window to display generation progress.
@@ -1592,9 +1613,9 @@ class DataAugmentationDialog:
                 color = colors[label_idx % len(colors)]
 
                 # Draw filled semi-transparent contour
-                overlay = annotated.copy()
-                cv2.drawContours(overlay, [contour], -1, color, -1)
-                cv2.addWeighted(overlay, 0.3, annotated, 0.7, 0, annotated)
+                # overlay = annotated.copy()
+                # cv2.drawContours(overlay, [contour], -1, color, -1)
+                # cv2.addWeighted(overlay, 0.3, annotated, 0.7, 0, annotated)
 
                 # Draw contour outline (thicker)
                 cv2.drawContours(annotated, [contour], -1, color, 3)
@@ -1932,7 +1953,14 @@ class DataAugmentationDialog:
         return total_objects_added
 
     def _on_close(self):
-        """Handle dialog close."""
+        """Handle dialog close and cleanup event bindings."""
+        # Unbind mousewheel event to prevent memory leaks
+        try:
+            if hasattr(self, 'objects_scroll_canvas'):
+                self.objects_scroll_canvas.unbind_all('<MouseWheel>')
+        except Exception as e:
+            logger.debug(f"Error unbinding mousewheel during close: {e}")
+
         self.dialog.destroy()
 
     def show(self):

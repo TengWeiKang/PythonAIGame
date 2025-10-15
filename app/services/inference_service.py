@@ -240,12 +240,12 @@ class InferenceService:
             class_name = det['class_name']
             confidence = det['confidence']
 
-            # Draw bounding box
-            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # Draw bounding box (thicker for better visibility)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 3)
 
-            # Draw label
+            # Draw label (larger font for better readability)
             label = f"{class_name}: {confidence:.2f}"
-            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
 
             # Draw label background
             cv2.rectangle(image, (x1, y1 - label_size[1] - 10),
@@ -253,7 +253,7 @@ class InferenceService:
 
             # Draw label text
             cv2.putText(image, label, (x1, y1 - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 2)
 
         return image
 

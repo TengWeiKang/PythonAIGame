@@ -1,4 +1,14 @@
-"""Gemini AI service for image analysis and chat."""
+"""Gemini AI service for image analysis and chat.
+
+Architecture:
+- Images are placed in system context (sent as content parts before user prompt)
+- User prompts are purely textual (no image metadata like resolution)
+- System context provides persistent reference materials and visual context
+- User messages contain only instructions and detection data
+
+This architecture allows the AI to receive images as foundational context
+before processing the user's textual query, leading to better contextual understanding.
+"""
 
 import logging
 from typing import Optional, List, Dict, Any
@@ -11,7 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiService:
-    """Service for interacting with Google Gemini AI API."""
+    """Service for interacting with Google Gemini AI API.
+
+    This service implements a context-first architecture where images are
+    presented as system context before user prompts, enabling better AI understanding.
+
+    Key features:
+    - analyze_image(): Single image analysis or text-only mode
+    - compare_images(): Image comparison or text-only comparison mode
+    - chat(): Basic text chat
+    - chat_with_images(): Flexible chat with optional images
+
+    All methods that accept images can also work in text-only mode by passing None.
+    """
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash",
                  temperature: float = 0.7, max_tokens: int = 2048, timeout: int = 30,
@@ -75,16 +97,21 @@ class GeminiService:
             self._connection_status = "error"
             return False
 
-    def analyze_image(self, image: np.ndarray, prompt: str,
-                     detections: Optional[List[Dict[str, Any]]] = None,
-                     class_names: Optional[List[str]] = None) -> Optional[str]:
-        """Analyze image with Gemini AI using the new google-genai library.
+    def analyze_image(self, image: Optional[np.ndarray], prompt: str,
+                     class_names: List[str],
+                     detections: List[Dict[str, Any]] = None,
+                     persona: Optional[str] = None) -> Optional[str]:
+        """Analyze image or text-only analysis with Gemini AI.
+
+        Images are placed in system context, user prompts are purely textual.
+        This method handles both image analysis and text-only analysis (when image=None).
 
         Args:
-            image: Image as numpy array (BGR format)
-            prompt: Analysis prompt
-            detections: Optional YOLO detections to include in context
-            class_names: Optional list of all available class names the model can detect
+            image: Image as numpy array (BGR format), or None for text-only analysis
+            prompt: Analysis instruction (textual)
+            class_names: List of all available class names the model can detect (required)
+            detections: YOLO detections to include in prompt (None = no detection data, [] = no detections, list = detections found)
+            persona: AI persona (optional, uses self.persona if None)
 
         Returns:
             AI response text, or None on failure
@@ -94,34 +121,36 @@ class GeminiService:
                 return None
 
         try:
-            # Convert BGR to RGB
-            image_rgb = image[..., ::-1].copy()
+            # Convert image to PIL if provided
+            pil_image = None
+            if image is not None:
+                # Convert BGR to RGB
+                image_rgb = image[..., ::-1].copy()
+                # Convert to PIL Image
+                pil_image = Image.fromarray(image_rgb)
 
-            # Convert to PIL Image
-            pil_image = Image.fromarray(image_rgb)
-
-            # Get image resolution
-            image_height, image_width = image.shape[:2]
-
-            # Enhance prompt with detections, class names, and resolution
-            enhanced_prompt = self._build_prompt(
-                prompt,
-                detections=detections,
+            # Build config with system context (includes image if provided)
+            config = self._build_generation_config(
+                persona=persona,
                 class_names=class_names,
-                image_width=image_width,
-                image_height=image_height
+                current_image=pil_image  # Image goes into system context
             )
-            logger.info(f"Sending prompt to Gemini API (analyze_image): {enhanced_prompt}")
 
-            # Build config with system instruction
-            config = self._build_generation_config()
+            # Build purely textual user prompt
+            user_prompt = self._build_prompt(
+                base_prompt=prompt,
+                detections=detections
+            )
+            logger.info(f"Sending prompt to Gemini API (analyze_image): {user_prompt}")
+
+            # Assemble content parts: system context + user prompt
+            content_parts = config["system_instruction_parts"] + [user_prompt]
 
             # Generate response using new client API
-            # New API: client.models.generate_content(model=..., contents=..., config=...)
             response = self._client.models.generate_content(
                 model=self.model,
-                contents=[enhanced_prompt, pil_image],
-                config=config
+                contents=content_parts,
+                config=config["generation_config"]
             )
 
             # Check response validity with detailed diagnostics
@@ -142,26 +171,27 @@ class GeminiService:
             logger.error(f"Error analyzing image: {e}", exc_info=True)
             return None
 
-    def analyze_with_text_only(self, prompt: str,
-                               detections: Optional[List[Dict[str, Any]]] = None,
-                               class_names: Optional[List[str]] = None,
-                               image_width: Optional[int] = None,
-                               image_height: Optional[int] = None,
-                               is_video_frame: bool = False,
-                               is_reference: bool = False) -> Optional[str]:
-        """Analyze using ONLY text prompt (no images sent to API).
+    def compare_images(self, reference_image: Optional[np.ndarray], current_image: Optional[np.ndarray],
+                      prompt: str, class_names: List[str],
+                      ref_detections: List[Dict[str, Any]],
+                      ref_width: int, ref_height: int,
+                      curr_detections: List[Dict[str, Any]] = None,
+                      persona: Optional[str] = None) -> Optional[str]:
+        """Compare images or text-only comparison with Gemini AI.
 
-        This method is used in yolo_detection mode where YOLO provides object
-        detection results and only these text results are sent to Gemini.
+        Both images are placed in system context, user prompts are purely textual.
+        This method handles image comparison and text-only comparison (when images=None).
 
         Args:
-            prompt: Analysis prompt
-            detections: YOLO detections to include as text context
-            class_names: Optional list of all available class names the model can detect
-            image_width: Optional image width in pixels
-            image_height: Optional image height in pixels
-            is_video_frame: True if image is from live video stream/webcam
-            is_reference: True if image is a reference image
+            reference_image: Reference image as numpy array, or None for text-only
+            current_image: Current image as numpy array, or None for text-only
+            prompt: Comparison instruction (textual)
+            class_names: List of all available class names the model can detect (required)
+            ref_detections: Detections from reference image (required, can be empty list)
+            ref_width: Reference image width (required for reference context)
+            ref_height: Reference image height (required for reference context)
+            curr_detections: Detections from current image (None = no detection data, [] = no detections, list = detections found)
+            persona: AI persona (optional, uses self.persona if None)
 
         Returns:
             AI response text, or None on failure
@@ -171,106 +201,44 @@ class GeminiService:
                 return None
 
         try:
-            # Build text-only prompt with detection results, class names, and resolution
-            enhanced_prompt = self._build_prompt(
-                prompt,
-                detections=detections,
+            # Convert images to PIL if provided
+            ref_pil = None
+            curr_pil = None
+
+            if reference_image is not None:
+                ref_rgb = reference_image[..., ::-1].copy()
+                ref_pil = Image.fromarray(ref_rgb)
+
+            if current_image is not None:
+                curr_rgb = current_image[..., ::-1].copy()
+                curr_pil = Image.fromarray(curr_rgb)
+
+            # Build config with system context (includes both images and reference detection data)
+            config = self._build_generation_config(
+                persona=persona,
                 class_names=class_names,
-                image_width=image_width,
-                image_height=image_height,
-                is_video_frame=is_video_frame,
-                is_reference=is_reference
-            )
-            logger.info(f"Sending prompt to Gemini API (analyze_with_text_only): {enhanced_prompt}")
-
-            # Build config with system instruction
-            config = self._build_generation_config()
-
-            # Generate response with ONLY text (no images) using new client API
-            response = self._client.models.generate_content(
-                model=self.model,
-                contents=enhanced_prompt,
-                config=config
-            )
-
-            # Check response validity with detailed diagnostics
-            if response and response.text:
-                return response.text
-            else:
-                # Provide detailed diagnostic information
-                diagnostic_msg = self._diagnose_empty_response(response, "analyze_with_text_only")
-                logger.warning(diagnostic_msg)
-
-                # Check if it's a configuration issue
-                if self.max_tokens < 500:
-                    logger.error(f"max_tokens is very low ({self.max_tokens}). Recommended: 2048+. Increase in settings.")
-
-                return None
-
-        except Exception as e:
-            logger.error(f"Error analyzing with text only: {e}", exc_info=True)
-            return None
-
-    def compare_images(self, reference_image: np.ndarray, current_image: np.ndarray,
-                      prompt: str, ref_detections: Optional[List[Dict[str, Any]]] = None,
-                      curr_detections: Optional[List[Dict[str, Any]]] = None,
-                      class_names: Optional[List[str]] = None) -> Optional[str]:
-        """Compare two images with Gemini AI using the new google-genai library.
-
-        Args:
-            reference_image: Reference image as numpy array
-            current_image: Current image as numpy array
-            prompt: Comparison prompt
-            ref_detections: Detections from reference image
-            curr_detections: Detections from current image
-            class_names: Optional list of all available class names the model can detect
-
-        Returns:
-            AI response text, or None on failure
-        """
-        if not self._initialized:
-            if not self.initialize():
-                return None
-
-        try:
-            # Convert images
-            ref_rgb = reference_image[..., ::-1].copy()
-            curr_rgb = current_image[..., ::-1].copy()
-
-            ref_pil = Image.fromarray(ref_rgb)
-            curr_pil = Image.fromarray(curr_rgb)
-
-            # Get image resolutions
-            ref_height, ref_width = reference_image.shape[:2]
-            curr_height, curr_width = current_image.shape[:2]
-
-            # Build enhanced prompt with all metadata
-            enhanced_prompt = self._build_comparison_prompt(
-                prompt,
                 ref_detections=ref_detections,
-                curr_detections=curr_detections,
-                class_names=class_names,
                 ref_width=ref_width,
                 ref_height=ref_height,
-                curr_width=curr_width,
-                curr_height=curr_height
+                ref_image=ref_pil,      # Reference in system context
+                current_image=curr_pil   # Current in system context
             )
-            logger.info(f"Sending prompt to Gemini API (compare_images): {enhanced_prompt}")
 
-            # Build config with system instruction
-            config = self._build_generation_config()
+            # Build purely textual user prompt with current image detection data only
+            user_prompt = self._build_comparison_prompt(
+                base_prompt=prompt,
+                curr_detections=curr_detections
+            )
+            logger.info(f"Sending prompt to Gemini API (compare_images): {user_prompt}")
 
-            # Generate response with both images using new client API
+            # Assemble content parts: system context + user prompt
+            content_parts = config["system_instruction_parts"] + [user_prompt]
+
+            # Generate response using new client API
             response = self._client.models.generate_content(
                 model=self.model,
-                contents=[
-                    enhanced_prompt,
-                    "Reference Image:",
-                    ref_pil,
-                    "Current Image:",
-                    curr_pil
-                ],
-                config=config
+                contents=content_parts,
+                config=config["generation_config"]
             )
 
             # Check response validity with detailed diagnostics
@@ -291,81 +259,6 @@ class GeminiService:
             logger.error(f"Error comparing images: {e}", exc_info=True)
             return None
 
-    def compare_with_text_only(self, prompt: str,
-                               ref_detections: Optional[List[Dict[str, Any]]] = None,
-                               curr_detections: Optional[List[Dict[str, Any]]] = None,
-                               class_names: Optional[List[str]] = None,
-                               ref_width: Optional[int] = None,
-                               ref_height: Optional[int] = None,
-                               curr_width: Optional[int] = None,
-                               curr_height: Optional[int] = None,
-                               curr_is_video_frame: bool = False) -> Optional[str]:
-        """Compare using ONLY text prompt (no images sent to API).
-
-        This method is used in yolo_detection mode where YOLO provides object
-        detection results from both images and only these text results are sent to Gemini.
-
-        Args:
-            prompt: Comparison prompt
-            ref_detections: Reference image YOLO detections
-            curr_detections: Current image YOLO detections
-            class_names: Optional list of all available class names the model can detect
-            ref_width: Reference image width in pixels
-            ref_height: Reference image height in pixels
-            curr_width: Current image width in pixels
-            curr_height: Current image height in pixels
-            curr_is_video_frame: True if current image is from live video stream/webcam
-
-        Returns:
-            AI response text, or None on failure
-        """
-        if not self._initialized:
-            if not self.initialize():
-                return None
-
-        try:
-            # Build text-only comparison prompt with all metadata
-            enhanced_prompt = self._build_comparison_prompt(
-                prompt,
-                ref_detections=ref_detections,
-                curr_detections=curr_detections,
-                class_names=class_names,
-                ref_width=ref_width,
-                ref_height=ref_height,
-                curr_width=curr_width,
-                curr_height=curr_height,
-                curr_is_video_frame=curr_is_video_frame
-            )
-            logger.info(f"Sending prompt to Gemini API (compare_with_text_only): {enhanced_prompt}")
-
-            # Build config with system instruction
-            config = self._build_generation_config()
-
-            # Generate response with ONLY text (no images) using new client API
-            response = self._client.models.generate_content(
-                model=self.model,
-                contents=enhanced_prompt,
-                config=config
-            )
-
-            # Check response validity with detailed diagnostics
-            if response and response.text:
-                return response.text
-            else:
-                # Provide detailed diagnostic information
-                diagnostic_msg = self._diagnose_empty_response(response, "compare_with_text_only")
-                logger.warning(diagnostic_msg)
-
-                # Check if it's a configuration issue
-                if self.max_tokens < 500:
-                    logger.error(f"max_tokens is very low ({self.max_tokens}). Recommended: 2048+. Increase in settings.")
-
-                return None
-
-        except Exception as e:
-            logger.error(f"Error comparing with text only: {e}", exc_info=True)
-            return None
-
     def chat(self, message: str, context: Optional[List[Dict[str, str]]] = None) -> Optional[str]:
         """Send chat message to Gemini using the new google-genai library.
 
@@ -383,21 +276,27 @@ class GeminiService:
         try:
             logger.info(f"Sending prompt to Gemini API (chat): {message}")
 
-            # Build config with system instruction
+            # Build config with system context (text only for basic chat)
             config = self._build_generation_config()
 
             # Handle conversation context
             if context:
                 # Create chat session with new API
-                # New API: client.chats.create(model=..., config=...)
-                chat = self._client.chats.create(model=self.model, config=config)
+                # Note: This may need adjustment based on actual API behavior
+                # For now, use basic approach with generation_config
+                chat = self._client.chats.create(
+                    model=self.model,
+                    config=config["generation_config"]
+                )
                 response = chat.send_message(message)
             else:
                 # Single message using generate_content
+                # For basic chat, system_instruction_parts is just the text
+                content_parts = config["system_instruction_parts"] + [message]
                 response = self._client.models.generate_content(
                     model=self.model,
-                    contents=message,
-                    config=config
+                    contents=content_parts,
+                    config=config["generation_config"]
                 )
 
             # Check response validity with detailed diagnostics
@@ -418,225 +317,165 @@ class GeminiService:
             logger.error(f"Error in chat: {e}", exc_info=True)
             return None
 
-    def _build_prompt(self, base_prompt: str, detections: Optional[List[Dict[str, Any]]] = None,
-                     class_names: Optional[List[str]] = None,
-                     image_width: Optional[int] = None,
-                     image_height: Optional[int] = None,
-                     is_video_frame: bool = False,
-                     is_reference: bool = False) -> str:
-        """Build enhanced prompt with detection information, class names, and image resolution.
+    def _build_prompt(self, base_prompt: str, detections: List[Dict[str, Any]] = None) -> str:
+        """Build purely textual user prompt.
 
-        ALWAYS includes image status section, even when image is not provided.
+        Images are provided in system context, so this prompt only contains
+        textual instructions and detection data.
+
+        Constructs the user message by combining:
+        1. Base user instruction (primary directive)
+        2. YOLO detection results (if available)
 
         Args:
-            base_prompt: Base user prompt
-            detections: Optional detection results (None = no image, [] = no detections, [items] = detections)
-            class_names: Optional list of all available class names the model can detect
-            image_width: Optional image width in pixels
-            image_height: Optional image height in pixels
-            is_video_frame: True if image is from live video stream/webcam
-            is_reference: True if image is a reference image
+            base_prompt: Base user prompt (primary instruction)
+            detections: Detection results (None = no detection data, [] = no detections, [items] = detections found)
 
         Returns:
-            Enhanced prompt string (without persona - that's in system_instruction)
+            Purely textual user prompt string
         """
-        # Start with user's prompt (authoritative instruction comes first)
-        enhanced = f"{base_prompt}\n\n"
+        # Start with user's instruction
+        prompt = f"{base_prompt}"
 
-        # Wrap all detection/reference data with label
-        enhanced += "=== REFERENCE MATERIALS ===\n"
+        # Add detection results if provided
+        if detections is not None:
+            prompt += "\n\n__CURRENT IMAGE DETECTION DATA__\n"
+            if len(detections) > 0:
+                det_summary = self._format_detections(detections)
+                prompt += f"YOLO Detection Results ({len(detections)} object{'s' if len(detections) != 1 else ''} detected):\n"
+                prompt += det_summary
+            else:
+                prompt += "YOLO Detection Results: No objects detected.\n"
 
-        # Add available class names if provided
-        if class_names and len(class_names) > 0:
-            enhanced += "Available Classes:\n"
-            for class_name in class_names:
-                enhanced += f"- {class_name}\n"
-            enhanced += "\n"
-
-        # Determine section header based on image source type
-        if is_video_frame:
-            section_header = "__VIDEO STREAM IMAGE__"
-        elif is_reference:
-            section_header = "__REFERENCE IMAGE__"
-        else:
-            section_header = "__CURRENT IMAGE__"
-
-        # ALWAYS include image status section
-        enhanced += f"{section_header}\n"
-
-        # Check if image is provided (dimensions or detections present)
-        has_image = (image_width is not None and image_height is not None) or (detections is not None)
-
-        if has_image:
-            # Image is provided - show resolution and detections
-            if image_width is not None and image_height is not None:
-                enhanced += f"Resolution: {image_width}x{image_height}\n"
-
-            # Add detection information
-            if detections is not None:
-                if len(detections) > 0:
-                    det_summary = self._format_detections(detections)
-                    enhanced += f"YOLO Detection Results ({len(detections)} object{'s' if len(detections) != 1 else ''} detected):\n"
-                    enhanced += det_summary
-                else:
-                    enhanced += "YOLO Detection Results: No objects detected.\n"
-
-            enhanced += "\nPlease analyze the image considering these detected objects."
-        else:
-            # Image is NOT provided
-            enhanced += "Status: Not provided\n"
-            enhanced += "\nNote: This is a text-only query without visual analysis.\n"
-
-        return enhanced
+        return prompt
 
     def _build_comparison_prompt(self, base_prompt: str,
-                                ref_detections: Optional[List[Dict[str, Any]]] = None,
-                                curr_detections: Optional[List[Dict[str, Any]]] = None,
-                                class_names: Optional[List[str]] = None,
-                                ref_width: Optional[int] = None,
-                                ref_height: Optional[int] = None,
-                                curr_width: Optional[int] = None,
-                                curr_height: Optional[int] = None,
-                                curr_is_video_frame: bool = False) -> str:
-        """Build comparison prompt with detection information, class names, and image resolutions.
+                                curr_detections: List[Dict[str, Any]] = None) -> str:
+        """Build purely textual comparison prompt.
 
-        ALWAYS includes both image status sections, even when images are not provided.
+        Both reference and current images are in system context.
+        This prompt only contains textual instructions and current image detection data.
+
+        Constructs the user message by combining:
+        1. Base user instruction (primary directive)
+        2. Current image YOLO detection results (if available)
 
         Args:
-            base_prompt: Base user prompt
-            ref_detections: Reference image detections (None = no image, [] = no detections, [items] = detections)
-            curr_detections: Current image detections (None = no image, [] = no detections, [items] = detections)
-            class_names: Optional list of all available class names the model can detect
-            ref_width: Reference image width in pixels
-            ref_height: Reference image height in pixels
-            curr_width: Current image width in pixels
-            curr_height: Current image height in pixels
-            curr_is_video_frame: True if current image is from live video stream/webcam
+            base_prompt: Base user prompt (primary instruction)
+            curr_detections: Current image detections (None = no detection data, [] = no detections, [items] = detections found)
 
         Returns:
-            Enhanced prompt string (without persona - that's in system_instruction)
+            Purely textual comparison prompt string
         """
-        # Start with user's prompt (authoritative instruction comes first)
-        enhanced = f"{base_prompt}\n\n"
+        # Start with user's instruction
+        prompt = f"{base_prompt}"
 
-        # Wrap all detection/reference data with label
-        enhanced += "=== REFERENCE MATERIALS ===\n\n"
+        # Add current image detection results if provided
+        if curr_detections is not None:
+            prompt += "\n\n__CURRENT IMAGE DETECTION DATA__\n"
+            if len(curr_detections) > 0:
+                det_summary = self._format_detections(curr_detections)
+                prompt += f"YOLO Detection Results ({len(curr_detections)} object{'s' if len(curr_detections) != 1 else ''} detected):\n"
+                prompt += det_summary
+            else:
+                prompt += "YOLO Detection Results: No objects detected.\n"
 
-        # Add available class names if provided
-        if class_names and len(class_names) > 0:
-            enhanced += "Available Classes:\n"
-            for class_name in class_names:
-                enhanced += f"- {class_name}\n"
-            enhanced += "\n"
+        return prompt
 
-        # ALWAYS include reference image section
-        enhanced += "__REFERENCE IMAGE__\n"
+    def _build_generation_config(self,
+                                persona: Optional[str] = None,
+                                class_names: List[str] = None,
+                                ref_detections: List[Dict[str, Any]] = None,
+                                ref_width: int = None,
+                                ref_height: int = None,
+                                ref_image = None,
+                                current_image = None) -> Dict:
+        """Build generation config with images in system context.
 
-        # Check if reference image is provided
-        has_ref_image = (ref_width is not None and ref_height is not None) or (ref_detections is not None)
+        Constructs system context by combining:
+        1. System instruction text (persona + reference materials + guidelines)
+        2. Reference image (if provided) - as visual context
+        3. Current image (if provided) - as visual context
 
-        if has_ref_image:
-            # Reference image is provided - show resolution and detections
-            if ref_width is not None and ref_height is not None:
-                enhanced += f"Resolution: {ref_width}x{ref_height}\n"
+        Images are now part of system context (sent as content parts), not in
+        GenerateContentConfig.system_instruction. This allows images to be
+        presented upfront as context before the user's textual query.
 
-            # Add detections
+        Args:
+            persona: AI persona/role instructions (optional, uses self.persona if None)
+            class_names: List of available class names (YOLO model capabilities)
+            ref_detections: Reference image detections (for comparison mode)
+            ref_width: Reference image width in pixels (for comparison mode)
+            ref_height: Reference image height in pixels (for comparison mode)
+            ref_image: Reference image as PIL Image (for comparison mode)
+            current_image: Current image as PIL Image (for analysis mode)
+
+        Returns:
+            Dict containing:
+            - system_instruction_parts: List of [text, ref_image, current_image]
+            - generation_config: GenerateContentConfig (without system_instruction)
+        """
+        # Start with base persona
+        persona_text = (persona or self.persona).strip() if (persona or self.persona) else ""
+        system_instruction = persona_text
+
+        # Add reference materials section if any reference data is provided
+        if class_names or ref_detections is not None or ref_width is not None:
+            system_instruction += "\n\n=== REFERENCE MATERIALS ===\n\n"
+
+            # Add available class names (model capabilities)
+            if class_names:
+                system_instruction += "Available Object Classes (YOLO can detect):\n"
+                for class_name in class_names:
+                    system_instruction += f"- {class_name}\n"
+                system_instruction += "\n"
+
+            # Add reference image detection metadata (not resolution - image speaks for itself)
             if ref_detections is not None:
+                system_instruction += "__REFERENCE IMAGE DATA__\n"
+
+                # Add detection results only
                 if len(ref_detections) > 0:
                     det_summary = self._format_detections(ref_detections)
-                    enhanced += f"YOLO Detection Results ({len(ref_detections)} object{'s' if len(ref_detections) != 1 else ''} detected):\n"
-                    enhanced += det_summary
+                    system_instruction += f"YOLO Detection Results ({len(ref_detections)} object{'s' if len(ref_detections) != 1 else ''} detected):\n"
+                    system_instruction += det_summary
                 else:
-                    enhanced += "YOLO Detection Results: No objects detected.\n"
-            enhanced += "\n"
-        else:
-            # Reference image is NOT provided
-            enhanced += "Status: Not provided\n\n"
+                    system_instruction += "YOLO Detection Results: No objects detected.\n"
 
-        # Current image section - use appropriate header based on source
-        curr_section_header = "__VIDEO STREAM IMAGE__" if curr_is_video_frame else "__CURRENT IMAGE__"
-        enhanced += f"{curr_section_header}\n"
+                system_instruction += "\nThis is the reference baseline for comparison.\n"
 
-        # Check if current image is provided
-        has_curr_image = (curr_width is not None and curr_height is not None) or (curr_detections is not None)
+        # Add programmatic instructions for handling queries
+        system_instruction += """
 
-        if has_curr_image:
-            # Current image is provided - show resolution and detections
-            if curr_width is not None and curr_height is not None:
-                enhanced += f"Resolution: {curr_width}x{curr_height}\n"
-
-            # Add detections
-            if curr_detections is not None:
-                if len(curr_detections) > 0:
-                    det_summary = self._format_detections(curr_detections)
-                    enhanced += f"YOLO Detection Results ({len(curr_detections)} object{'s' if len(curr_detections) != 1 else ''} detected):\n"
-                    enhanced += det_summary
-                else:
-                    enhanced += "YOLO Detection Results: No objects detected.\n"
-            enhanced += "\n"
-        else:
-            # Current image is NOT provided
-            enhanced += "Status: Not provided\n\n"
-
-        # Add appropriate closing message based on image availability
-        if has_ref_image and has_curr_image:
-            enhanced += "Please compare these images and identify key differences."
-        elif has_ref_image or has_curr_image:
-            enhanced += "Please analyze the available image data."
-        else:
-            enhanced += "Note: This is a text-only query without visual analysis.\n"
-
-        return enhanced
-
-    def _build_generation_config(self) -> types.GenerateContentConfig:
-        """Build GenerateContentConfig with system instruction (persona) using new google-genai types.
-
-        Returns:
-            GenerateContentConfig object with system_instruction if persona exists
-        """
-        # Build enhanced persona with reference materials instructions
-        enhanced_persona = self.persona if self.persona and self.persona.strip() else ""
-
-        # Add programmatic instructions
-        reference_instructions = """
-
-The detection results will always be shown after user message prompt.
-
-IMPORTANT: Treat the user's message as the authoritative instruction.
-Treat any content labeled === REFERENCE MATERIALS === as reference material only, use it to inform your answer, but never paraphrase it as if the user wrote it.
+=== ANALYSIS INSTRUCTIONS ===
+- Images are provided in the context above
+- Follow the user's textual instruction as the primary directive
+- Analyze the provided images using reference materials as context
+- Provide clear, educational feedback
+- Detection data (if provided) supplements visual analysis
 """
 
-        enhanced_persona = enhanced_persona + reference_instructions
+        # Build system context parts (text + images)
+        system_context = [system_instruction]
 
-        if enhanced_persona.strip():
-            # Create config with enhanced persona as system instruction
-            return types.GenerateContentConfig(
-                system_instruction=enhanced_persona,
+        # Add reference image to system context if provided
+        if ref_image is not None:
+            system_context.append(ref_image)
+
+        # Add current image to system context if provided
+        if current_image is not None:
+            system_context.append(current_image)
+
+        # Return dict with system context and generation config
+        return {
+            "system_instruction_parts": system_context,
+            "generation_config": types.GenerateContentConfig(
                 temperature=self.temperature,
                 max_output_tokens=self.max_tokens,
                 response_mime_type="text/plain",
-                thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
-                # safety_settings=[
-                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                # ]
+                thinking_config=types.ThinkingConfig(thinking_budget=0)  # Disables thinking
             )
-        else:
-            # Return config without system instruction
-            return types.GenerateContentConfig(
-                temperature=self.temperature,
-                max_output_tokens=self.max_tokens,
-                response_mime_type="text/plain",
-                thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
-                # safety_settings=[
-                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                #     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE),
-                # ]
-            )
+        }
 
     def _format_detections(self, detections: List[Dict[str, Any]]) -> str:
         """Format detections as comprehensive readable text with full details.
@@ -778,13 +617,13 @@ Treat any content labeled === REFERENCE MATERIALS === as reference material only
 
     def chat_with_images(self, message: str, frame: Optional[np.ndarray] = None,
                         reference: Optional[np.ndarray] = None) -> Optional[str]:
-        """Universal chat method that handles any combination of images.
+        """Universal chat method with images in system context.
 
-        This is a simplified interface that accepts whatever images are available
-        (both, one, or none) and sends them to Gemini for analysis.
+        Images are placed in system context, user message is purely textual.
+        This method handles any combination of images (both, one, or none).
 
         Args:
-            message: User message text
+            message: User message text (textual instruction)
             frame: Current frame from webcam (may be None)
             reference: Reference image (may be None)
 
@@ -796,34 +635,35 @@ Treat any content labeled === REFERENCE MATERIALS === as reference material only
                 return None
 
         try:
-            # Build the contents list starting with the message
-            contents = [message]
+            # Convert images to PIL if provided
+            ref_pil = None
+            frame_pil = None
 
-            # Add whatever images are available
             if reference is not None:
-                # Convert BGR to RGB and add to contents
                 ref_rgb = reference[..., ::-1].copy()
                 ref_pil = Image.fromarray(ref_rgb)
-                contents.append("Reference Image:")
-                contents.append(ref_pil)
 
             if frame is not None:
-                # Convert BGR to RGB and add to contents
                 frame_rgb = frame[..., ::-1].copy()
                 frame_pil = Image.fromarray(frame_rgb)
-                contents.append("Current Frame:")
-                contents.append(frame_pil)
 
-            logger.info(f"Sending chat message with {len([c for c in contents if isinstance(c, Image.Image)])} image(s)")
+            image_count = sum(1 for img in [ref_pil, frame_pil] if img is not None)
+            logger.info(f"Sending chat message with {image_count} image(s)")
 
-            # Build config with system instruction
-            config = self._build_generation_config()
+            # Build config with system context (includes images if provided)
+            config = self._build_generation_config(
+                ref_image=ref_pil,
+                current_image=frame_pil
+            )
 
-            # Send everything to Gemini
+            # Assemble content parts: system context + user message
+            content_parts = config["system_instruction_parts"] + [message]
+
+            # Send to Gemini
             response = self._client.models.generate_content(
                 model=self.model,
-                contents=contents,
-                config=config
+                contents=content_parts,
+                config=config["generation_config"]
             )
 
             # Check response validity with detailed diagnostics

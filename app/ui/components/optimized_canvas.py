@@ -389,7 +389,7 @@ class OptimizedCanvas(tk.Canvas):
                     # Draw bounding box
                     box_id = self.create_rectangle(
                         canvas_x1, canvas_y1, canvas_x2, canvas_y2,
-                        outline='#00ff00', width=2, tags='debug_box'
+                        outline='#00ff00', width=3, tags='debug_box'
                     )
                     self._debug_boxes.append(box_id)
 
@@ -401,7 +401,7 @@ class OptimizedCanvas(tk.Canvas):
                         canvas_x1 + 2, canvas_y1 + 2,
                         text=label_text,
                         anchor='nw',
-                        font=('Segoe UI', 9, 'bold')
+                        font=('Segoe UI', 12, 'bold')
                     )
                     text_bbox = self.bbox(temp_text_id)
                     # Delete the temporary text immediately
@@ -424,7 +424,7 @@ class OptimizedCanvas(tk.Canvas):
                         text=label_text,
                         anchor='nw',
                         fill='#00ff00',
-                        font=('Segoe UI', 9, 'bold'),
+                        font=('Segoe UI', 12, 'bold'),
                         tags='debug_box'
                     )
                     self._debug_boxes.append(text_id)
