@@ -9,6 +9,7 @@ from PIL import Image, ImageTk
 import logging
 import random
 import os
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class DataAugmentationDialog:
         self.selected_objects_ids: List[str] = []  # List of selected object IDs
         self.current_preview_index: int = -1
         self.preview_bg_button: Optional[ttk.Button] = None  # Preview button reference
+        self.batch_timestamp: str = ""  # Timestamp for current batch to ensure unique filenames
 
         # Get all training objects with segmentation
         all_objects = self.training_service.get_all_objects()
@@ -855,6 +857,9 @@ class DataAugmentationDialog:
                 )
                 return
 
+        # Generate unique timestamp for this batch to prevent filename conflicts
+        self.batch_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         # Disable generate button during generation
         self.generate_button.config(state='disabled')
         self.generation_status.config(text="Generating...", foreground='orange')
@@ -872,7 +877,8 @@ class DataAugmentationDialog:
                 progress_window=progress_window,
                 use_random_selection=use_random_selection,
                 min_objects=min_objects,
-                max_objects=max_objects
+                max_objects=max_objects,
+                batch_timestamp=self.batch_timestamp
             )
 
             # Populate generated images list
@@ -880,14 +886,16 @@ class DataAugmentationDialog:
 
             # Update status
             self.generation_status.config(
-                text=f"✓ Generated {len(self.augmented_data)} images",
+                text=f"✓ Generated {len(self.augmented_data)} images (batch: {self.batch_timestamp})",
                 foreground='green'
             )
 
             # Enable save button
             self.save_button.config(state='normal')
 
-            logger.info(f"Generated {len(self.augmented_data)} augmented images")
+            logger.info(
+                f"Generated {len(self.augmented_data)} augmented images with batch timestamp {self.batch_timestamp}"
+            )
 
         except Exception as e:
             logger.error(f"Error generating augmented images: {e}", exc_info=True)
@@ -907,7 +915,8 @@ class DataAugmentationDialog:
     def _place_objects_randomly(self, background: np.ndarray, selected_objects: List,
                                 num_generations: int, progress_window: Optional[tk.Toplevel] = None,
                                 use_random_selection: bool = False, min_objects: int = 1,
-                                max_objects: Optional[int] = None) -> List[Dict]:
+                                max_objects: Optional[int] = None,
+                                batch_timestamp: str = "") -> List[Dict]:
         """Generate multiple augmented images with random object placement.
 
         Args:
@@ -918,6 +927,7 @@ class DataAugmentationDialog:
             use_random_selection: If True, randomly select subset of objects per image
             min_objects: Minimum objects per image (only used if use_random_selection=True)
             max_objects: Maximum objects per image (None = all selected, only used if use_random_selection=True)
+            batch_timestamp: Timestamp string to make filenames unique across batches
 
         Returns:
             List of dicts with 'image', 'labels', 'filename' keys
@@ -932,8 +942,12 @@ class DataAugmentationDialog:
         if max_objects is None:
             max_objects = len(selected_objects)
 
+        # Generate timestamp if not provided (for backward compatibility)
+        if not batch_timestamp:
+            batch_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         logger.info(
-            f"Starting generation: {num_generations} images, "
+            f"Starting batch generation (timestamp: {batch_timestamp}): {num_generations} images, "
             f"{'random placement per object type' if use_random_selection else 'all objects once'}, "
             f"range: {min_objects}-{max_objects} copies per object type"
         )
@@ -973,7 +987,7 @@ class DataAugmentationDialog:
                     current = gen_idx + 1
                     total_objects_count = len(objects_to_place)
                     progress_window.status_label.config(
-                        text=f"Generating {current}/{num_generations} (placing {total_objects_count} objects)..."
+                        text=f"Batch {batch_timestamp}: Generating {current}/{num_generations} ({total_objects_count} objects)..."
                     )
                     progress_window.progress_bar['value'] = current
                     percent = int((current / num_generations) * 100)
@@ -1096,10 +1110,13 @@ class DataAugmentationDialog:
                         f"after {max_attempts} attempts (generation {gen_idx + 1})"
                     )
 
+            # Create unique filename with batch timestamp to prevent conflicts
+            filename = f'augmented_{batch_timestamp}_{gen_idx:03d}.jpg'
+
             augmented_data.append({
                 'image': aug_image,
                 'labels': labels,
-                'filename': f'augmented_{gen_idx:03d}.jpg',
+                'filename': filename,
                 'num_objects': num_to_place  # Store for display in listbox
             })
 
@@ -1109,7 +1126,7 @@ class DataAugmentationDialog:
 
         # Log statistics if random selection was used
         if use_random_selection and object_placement_stats:
-            logger.info(f"\nGeneration complete! Per-object-type placement statistics:")
+            logger.info(f"\nBatch {batch_timestamp} generation complete! Per-object-type placement statistics:")
             logger.info(f"Generated {num_generations} augmented images")
             logger.info(f"Object placement counts:")
 
@@ -1777,18 +1794,19 @@ class DataAugmentationDialog:
                 progress_window.destroy()
                 progress_window = None
 
-            # Show enhanced success message with detailed counts
+            # Show enhanced success message with detailed counts and batch info
             num_images = len(self.augmented_data)
             messagebox.showinfo(
                 "Successfully Saved",
                 f"Successfully saved!\n\n"
+                f"Batch: {self.batch_timestamp}\n"
                 f"Added {total_objects_added} objects from {num_images} images to training list.",
                 parent=self.dialog
             )
 
             logger.info(
-                f"Save operation completed: {total_objects_added} objects "
-                f"from {num_images} images added to training service"
+                f"Save operation completed for batch {self.batch_timestamp}: "
+                f"{total_objects_added} objects from {num_images} images added to training service"
             )
 
         except Exception as e:

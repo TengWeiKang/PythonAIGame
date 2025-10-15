@@ -1,13 +1,27 @@
 """Gemini AI service for image analysis and chat.
 
-Architecture:
-- Images are placed in system context (sent as content parts before user prompt)
-- User prompts are purely textual (no image metadata like resolution)
-- System context provides persistent reference materials and visual context
-- User messages contain only instructions and detection data
+This service implements Google Cloud's Vertex AI best practices for prompt structure,
+ensuring optimal AI performance and response quality.
 
-This architecture allows the AI to receive images as foundational context
-before processing the user's textual query, leading to better contextual understanding.
+Architecture:
+- Follows Google's recommended prompt structure:
+  1. TASK: Clear description of what to do
+  2. CONTEXT: Background information (role + capabilities)
+  3. INPUT DATA: The data to analyze (reference + current)
+  4. OUTPUT REQUIREMENTS: Format and style specifications
+- ALL data (images + detection metadata) is in system instruction
+- User prompts contain ONLY the task/instruction (minimal, focused)
+- Images are sent as content parts in system context
+- User messages are pure text instructions
+
+This structured approach provides:
+- Clear separation of concerns (task, context, input, output)
+- Better AI understanding with explicit sections
+- Easier debugging and maintenance
+- Consistent formatting across all operations
+- Improved response quality and relevance
+
+Reference: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/structure-prompts
 """
 
 import logging
@@ -23,16 +37,28 @@ logger = logging.getLogger(__name__)
 class GeminiService:
     """Service for interacting with Google Gemini AI API.
 
-    This service implements a context-first architecture where images are
-    presented as system context before user prompts, enabling better AI understanding.
+    This service implements Google Cloud's Vertex AI best practices for prompt structure,
+    using a structured approach with explicit sections:
+    - TASK: What to do
+    - CONTEXT: Role and capabilities
+    - INPUT DATA: What to analyze
+    - OUTPUT REQUIREMENTS: How to respond
+
+    Architecture:
+    - ALL image data (visual + detection metadata) is in system instruction
+    - User prompts contain ONLY the specific task/instruction
+    - Structured prompts improve AI understanding and response quality
 
     Key features:
-    - analyze_image(): Single image analysis or text-only mode
-    - compare_images(): Image comparison or text-only comparison mode
-    - chat(): Basic text chat
-    - chat_with_images(): Flexible chat with optional images
+    - analyze_image(): Single image analysis with structured prompts
+    - compare_images(): Image comparison with structured prompts
+    - chat(): Basic text chat with structured prompts
+    - chat_with_images(): Flexible chat with optional images and structured prompts
 
     All methods that accept images can also work in text-only mode by passing None.
+    Detection data and image metadata are automatically included in system instruction.
+
+    Reference: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/structure-prompts
     """
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash",
@@ -101,16 +127,22 @@ class GeminiService:
                      class_names: List[str],
                      detections: List[Dict[str, Any]] = None,
                      persona: Optional[str] = None) -> Optional[str]:
-        """Analyze image or text-only analysis with Gemini AI.
+        """Analyze image using Google's Vertex AI structured prompt best practices.
 
-        Images are placed in system context, user prompts are purely textual.
+        Implements structured prompts with:
+        - TASK: Clear analysis objective
+        - CONTEXT: AI role and detection capabilities
+        - INPUT DATA: Current frame with detection results
+        - OUTPUT REQUIREMENTS: Specific format for educational feedback
+
         This method handles both image analysis and text-only analysis (when image=None).
 
         Args:
             image: Image as numpy array (BGR format), or None for text-only analysis
-            prompt: Analysis instruction (textual)
+            prompt: Analysis instruction (what you want the AI to do)
             class_names: List of all available class names the model can detect (required)
-            detections: YOLO detections to include in prompt (None = no detection data, [] = no detections, list = detections found)
+            detections: YOLO detections (automatically added to system instruction)
+                       None = no detection data, [] = no detections, list = detections found
             persona: AI persona (optional, uses self.persona if None)
 
         Returns:
@@ -123,24 +155,33 @@ class GeminiService:
         try:
             # Convert image to PIL if provided
             pil_image = None
+            curr_width = None
+            curr_height = None
             if image is not None:
                 # Convert BGR to RGB
                 image_rgb = image[..., ::-1].copy()
                 # Convert to PIL Image
                 pil_image = Image.fromarray(image_rgb)
+                # Get dimensions
+                curr_height, curr_width = image.shape[:2]
 
-            # Build config with system context (includes image if provided)
+            # Define clear task description following Google's best practices
+            task = "Analyze the current frame and provide detailed educational feedback about the detected objects and scene composition."
+
+            # Build config with structured prompt (following Google's Vertex AI guidelines)
             config = self._build_generation_config(
                 persona=persona,
                 class_names=class_names,
-                current_image=pil_image  # Image goes into system context
+                task_description=task,
+                output_format=self._analysis_output_format(),
+                current_image=pil_image,
+                curr_detections=detections,
+                curr_width=curr_width,
+                curr_height=curr_height
             )
 
-            # Build purely textual user prompt
-            user_prompt = self._build_prompt(
-                base_prompt=prompt,
-                detections=detections
-            )
+            # Build minimal user prompt (just the specific instruction)
+            user_prompt = self._build_prompt(base_prompt=prompt)
             logger.info(f"Sending prompt to Gemini API (analyze_image): {user_prompt}")
 
             # Assemble content parts: system context + user prompt
@@ -177,20 +218,26 @@ class GeminiService:
                       ref_width: int, ref_height: int,
                       curr_detections: List[Dict[str, Any]] = None,
                       persona: Optional[str] = None) -> Optional[str]:
-        """Compare images or text-only comparison with Gemini AI.
+        """Compare images using Google's Vertex AI structured prompt best practices.
 
-        Both images are placed in system context, user prompts are purely textual.
+        Implements structured prompts with:
+        - TASK: Clear comparison objective
+        - CONTEXT: AI role and detection capabilities
+        - INPUT DATA: Reference image and current frame with detection results
+        - OUTPUT REQUIREMENTS: Specific format for comparison analysis
+
         This method handles image comparison and text-only comparison (when images=None).
 
         Args:
             reference_image: Reference image as numpy array, or None for text-only
             current_image: Current image as numpy array, or None for text-only
-            prompt: Comparison instruction (textual)
+            prompt: Comparison instruction (what you want the AI to do)
             class_names: List of all available class names the model can detect (required)
-            ref_detections: Detections from reference image (required, can be empty list)
-            ref_width: Reference image width (required for reference context)
-            ref_height: Reference image height (required for reference context)
-            curr_detections: Detections from current image (None = no detection data, [] = no detections, list = detections found)
+            ref_detections: Reference image detections (automatically added to system instruction)
+            ref_width: Reference image width (included in system instruction)
+            ref_height: Reference image height (included in system instruction)
+            curr_detections: Current image detections (automatically added to system instruction)
+                           None = no detection data, [] = no detections, list = detections found
             persona: AI persona (optional, uses self.persona if None)
 
         Returns:
@@ -204,6 +251,8 @@ class GeminiService:
             # Convert images to PIL if provided
             ref_pil = None
             curr_pil = None
+            curr_width = None
+            curr_height = None
 
             if reference_image is not None:
                 ref_rgb = reference_image[..., ::-1].copy()
@@ -212,23 +261,30 @@ class GeminiService:
             if current_image is not None:
                 curr_rgb = current_image[..., ::-1].copy()
                 curr_pil = Image.fromarray(curr_rgb)
+                # Get current image dimensions
+                curr_height, curr_width = current_image.shape[:2]
 
-            # Build config with system context (includes both images and reference detection data)
+            # Define clear task description following Google's best practices
+            task = "Compare the current frame with the reference image and identify differences in detected objects, their positions, and overall scene composition."
+
+            # Build config with structured prompt (following Google's Vertex AI guidelines)
             config = self._build_generation_config(
                 persona=persona,
                 class_names=class_names,
+                task_description=task,
+                output_format=self._comparison_output_format(),
                 ref_detections=ref_detections,
                 ref_width=ref_width,
                 ref_height=ref_height,
-                ref_image=ref_pil,      # Reference in system context
-                current_image=curr_pil   # Current in system context
+                ref_image=ref_pil,
+                current_image=curr_pil,
+                curr_detections=curr_detections,
+                curr_width=curr_width,
+                curr_height=curr_height
             )
 
-            # Build purely textual user prompt with current image detection data only
-            user_prompt = self._build_comparison_prompt(
-                base_prompt=prompt,
-                curr_detections=curr_detections
-            )
+            # Build minimal user prompt (just the instruction)
+            user_prompt = self._build_comparison_prompt(base_prompt=prompt)
             logger.info(f"Sending prompt to Gemini API (compare_images): {user_prompt}")
 
             # Assemble content parts: system context + user prompt
@@ -260,7 +316,12 @@ class GeminiService:
             return None
 
     def chat(self, message: str, context: Optional[List[Dict[str, str]]] = None) -> Optional[str]:
-        """Send chat message to Gemini using the new google-genai library.
+        """Send chat message using Google's Vertex AI structured prompt best practices.
+
+        Implements structured prompts with:
+        - TASK: Clear conversational objective
+        - CONTEXT: AI role and conversational guidelines
+        - OUTPUT REQUIREMENTS: Format for conversational responses
 
         Args:
             message: User message
@@ -276,8 +337,14 @@ class GeminiService:
         try:
             logger.info(f"Sending prompt to Gemini API (chat): {message}")
 
-            # Build config with system context (text only for basic chat)
-            config = self._build_generation_config()
+            # Define clear task description following Google's best practices
+            task = "Engage in a helpful conversation with the user, providing clear and informative responses."
+
+            # Build config with structured prompt (following Google's Vertex AI guidelines)
+            config = self._build_generation_config(
+                task_description=task,
+                output_format=self._chat_output_format()
+            )
 
             # Handle conversation context
             if context:
@@ -317,143 +384,132 @@ class GeminiService:
             logger.error(f"Error in chat: {e}", exc_info=True)
             return None
 
-    def _build_prompt(self, base_prompt: str, detections: List[Dict[str, Any]] = None) -> str:
-        """Build purely textual user prompt.
+    def _build_prompt(self, base_prompt: str) -> str:
+        """Build minimal user prompt - just the instruction.
 
-        Images are provided in system context, so this prompt only contains
-        textual instructions and detection data.
-
-        Constructs the user message by combining:
-        1. Base user instruction (primary directive)
-        2. YOLO detection results (if available)
+        All image data (reference and current) is now in system instruction.
+        User prompt contains only the task/query.
 
         Args:
-            base_prompt: Base user prompt (primary instruction)
-            detections: Detection results (None = no detection data, [] = no detections, [items] = detections found)
+            base_prompt: User's instruction/query
 
         Returns:
-            Purely textual user prompt string
+            Minimal prompt with just the user's instruction
         """
-        # Start with user's instruction
-        prompt = f"{base_prompt}"
+        return base_prompt
 
-        # Add detection results if provided
-        if detections is not None:
-            prompt += "\n\n__CURRENT IMAGE DETECTION DATA__\n"
-            if len(detections) > 0:
-                det_summary = self._format_detections(detections)
-                prompt += f"YOLO Detection Results ({len(detections)} object{'s' if len(detections) != 1 else ''} detected):\n"
-                prompt += det_summary
-            else:
-                prompt += "YOLO Detection Results: No objects detected.\n"
+    def _build_comparison_prompt(self, base_prompt: str) -> str:
+        """Build minimal comparison prompt - just the instruction.
 
-        return prompt
-
-    def _build_comparison_prompt(self, base_prompt: str,
-                                curr_detections: List[Dict[str, Any]] = None) -> str:
-        """Build purely textual comparison prompt.
-
-        Both reference and current images are in system context.
-        This prompt only contains textual instructions and current image detection data.
-
-        Constructs the user message by combining:
-        1. Base user instruction (primary directive)
-        2. Current image YOLO detection results (if available)
+        Both reference and current image data are in system instruction.
+        User prompt contains only the comparison task.
 
         Args:
-            base_prompt: Base user prompt (primary instruction)
-            curr_detections: Current image detections (None = no detection data, [] = no detections, [items] = detections found)
+            base_prompt: User's instruction/query
 
         Returns:
-            Purely textual comparison prompt string
+            Minimal prompt with just the comparison instruction
         """
-        # Start with user's instruction
-        prompt = f"{base_prompt}"
-
-        # Add current image detection results if provided
-        if curr_detections is not None:
-            prompt += "\n\n__CURRENT IMAGE DETECTION DATA__\n"
-            if len(curr_detections) > 0:
-                det_summary = self._format_detections(curr_detections)
-                prompt += f"YOLO Detection Results ({len(curr_detections)} object{'s' if len(curr_detections) != 1 else ''} detected):\n"
-                prompt += det_summary
-            else:
-                prompt += "YOLO Detection Results: No objects detected.\n"
-
-        return prompt
+        return base_prompt
 
     def _build_generation_config(self,
                                 persona: Optional[str] = None,
                                 class_names: List[str] = None,
+                                task_description: str = None,
+                                output_format: str = None,
                                 ref_detections: List[Dict[str, Any]] = None,
                                 ref_width: int = None,
                                 ref_height: int = None,
                                 ref_image = None,
-                                current_image = None) -> Dict:
-        """Build generation config with images in system context.
+                                current_image = None,
+                                curr_detections: List[Dict[str, Any]] = None,
+                                curr_width: int = None,
+                                curr_height: int = None) -> Dict:
+        """Build generation config following Google's Vertex AI prompt structure best practices.
 
-        Constructs system context by combining:
-        1. System instruction text (persona + reference materials + guidelines)
-        2. Reference image (if provided) - as visual context
-        3. Current image (if provided) - as visual context
+        Implements Google's recommended prompt structure:
+        1. TASK: Clear description of what to do
+        2. CONTEXT: Background information (role + capabilities)
+        3. INPUT DATA: The data to analyze (reference + current)
+        4. OUTPUT REQUIREMENTS: Format and style specifications
 
-        Images are now part of system context (sent as content parts), not in
-        GenerateContentConfig.system_instruction. This allows images to be
-        presented upfront as context before the user's textual query.
+        This structured approach improves AI understanding and response quality by
+        clearly separating different types of information with explicit headers.
 
         Args:
             persona: AI persona/role instructions (optional, uses self.persona if None)
             class_names: List of available class names (YOLO model capabilities)
+            task_description: Explicit task instruction (what the AI should do)
+            output_format: Explicit output format specification (how to respond)
             ref_detections: Reference image detections (for comparison mode)
             ref_width: Reference image width in pixels (for comparison mode)
             ref_height: Reference image height in pixels (for comparison mode)
             ref_image: Reference image as PIL Image (for comparison mode)
             current_image: Current image as PIL Image (for analysis mode)
+            curr_detections: Current image detections (for current frame analysis)
+            curr_width: Current image width in pixels (for current frame analysis)
+            curr_height: Current image height in pixels (for current frame analysis)
 
         Returns:
             Dict containing:
             - system_instruction_parts: List of [text, ref_image, current_image]
-            - generation_config: GenerateContentConfig (without system_instruction)
+            - generation_config: GenerateContentConfig
         """
-        # Start with base persona
+        system_instruction = ""
+        # ============================================================
+        # SECTION 2: CONTEXT
+        # ============================================================
+
+        # Your Role
         persona_text = (persona or self.persona).strip() if (persona or self.persona) else ""
-        system_instruction = persona_text
+        if persona_text:
+            system_instruction += f"YOUR_ROLE:{persona_text}\n\n"
 
-        # Add reference materials section if any reference data is provided
-        if class_names or ref_detections is not None or ref_width is not None:
-            system_instruction += "\n\n=== REFERENCE MATERIALS ===\n\n"
+        # Available Object Detection Classes
+        if class_names:
+            system_instruction += "OBJECT_CLASSES:\n"
+            for class_name in class_names:
+                system_instruction += f"- {class_name}\n"
+            system_instruction += "\n"
 
-            # Add available class names (model capabilities)
-            if class_names:
-                system_instruction += "Available Object Classes (YOLO can detect):\n"
-                for class_name in class_names:
-                    system_instruction += f"- {class_name}\n"
+        # ============================================================
+        # SECTION 3: INPUT DATA
+        # ============================================================
+        has_input_data = (ref_detections is not None or ref_width is not None or
+                         curr_detections is not None or curr_width is not None)
+
+        if has_input_data:
+            # Reference Image Data
+            if ref_detections is not None or ref_width is not None:
+                system_instruction += "REFERENCE_IMAGE:\n"
+
+                if ref_width is not None and ref_height is not None:
+                    system_instruction += f"- Resolution: {ref_width}x{ref_height} pixels\n"
+
+                if ref_detections is not None:
+                    if len(ref_detections) > 0:
+                        system_instruction += f"- Objects Detected: {len(ref_detections)}\n"
+                        system_instruction += self._format_detections(ref_detections)
+                    else:
+                        system_instruction += "- Objects Detected: None\n"
                 system_instruction += "\n"
+            else:
+                system_instruction += "REFERENCE_IMAGE: None provided\n\n"
+            # Current Frame Data
+            if curr_detections is not None or curr_width is not None:
+                system_instruction += "VIDEO_STREAM_IMAGE\n"
 
-            # Add reference image detection metadata (not resolution - image speaks for itself)
-            if ref_detections is not None:
-                system_instruction += "__REFERENCE IMAGE DATA__\n"
+                if curr_width is not None and curr_height is not None:
+                    system_instruction += f"- Resolution: {curr_width}x{curr_height} pixels\n"
 
-                # Add detection results only
-                if len(ref_detections) > 0:
-                    det_summary = self._format_detections(ref_detections)
-                    system_instruction += f"YOLO Detection Results ({len(ref_detections)} object{'s' if len(ref_detections) != 1 else ''} detected):\n"
-                    system_instruction += det_summary
-                else:
-                    system_instruction += "YOLO Detection Results: No objects detected.\n"
-
-                system_instruction += "\nThis is the reference baseline for comparison.\n"
-
-        # Add programmatic instructions for handling queries
-        system_instruction += """
-
-=== ANALYSIS INSTRUCTIONS ===
-- Images are provided in the context above
-- Follow the user's textual instruction as the primary directive
-- Analyze the provided images using reference materials as context
-- Provide clear, educational feedback
-- Detection data (if provided) supplements visual analysis
-"""
+                if curr_detections is not None:
+                    if len(curr_detections) > 0:
+                        system_instruction += f"- Objects Detected: {len(curr_detections)}\n"
+                        system_instruction += self._format_detections(curr_detections)
+                    else:
+                        system_instruction += "- Objects Detected: None\n"
+            else:
+                system_instruction += "VIDEO_STREAM_IMAGE: None provided\n"
 
         # Build system context parts (text + images)
         system_context = [system_instruction]
@@ -466,6 +522,7 @@ class GeminiService:
         if current_image is not None:
             system_context.append(current_image)
 
+        logger.info(f"System instruction: {system_instruction}")
         # Return dict with system context and generation config
         return {
             "system_instruction_parts": system_context,
@@ -518,6 +575,65 @@ class GeminiService:
             lines.append("")  # Blank line between detections
 
         return "\n".join(lines)
+
+    def _default_output_format(self) -> str:
+        """Default output format specification following Google's best practices.
+
+        Returns:
+            Formatted string with output requirements
+        """
+        return """Provide your analysis in the following format:
+
+1. SUMMARY: Brief overview in 1-2 sentences
+2. OBSERVATIONS: Bullet points for key findings
+3. RECOMMENDATIONS: Actionable suggestions if applicable
+
+Use clear, educational language appropriate for classroom settings."""
+
+    def _analysis_output_format(self) -> str:
+        """Output format specification for single image analysis.
+
+        Returns:
+            Formatted string with output requirements for image analysis
+        """
+        return """Provide detailed analysis with:
+
+1. OBJECTS DETECTED: List all detected objects with confidence levels
+2. OBSERVATIONS: What you notice about the scene composition and arrangement
+3. EDUCATIONAL FEEDBACK: Insights or learning points relevant to the context
+4. RECOMMENDATIONS: Suggestions for improvement if applicable
+
+Format your response clearly with numbered sections and bullet points."""
+
+    def _comparison_output_format(self) -> str:
+        """Output format specification for image comparison.
+
+        Returns:
+            Formatted string with output requirements for comparison
+        """
+        return """Provide comparison analysis with:
+
+1. CHANGES DETECTED: Objects added, removed, moved, or modified
+2. DIFFERENCES: Key differences between reference and current frame
+3. ACCURACY ASSESSMENT: How well the current frame matches the reference
+4. FEEDBACK: Educational feedback and suggestions for improvement
+
+Use clear section headers and bullet points for readability."""
+
+    def _chat_output_format(self) -> str:
+        """Output format specification for chat interactions.
+
+        Returns:
+            Formatted string with output requirements for chat
+        """
+        return """Provide a clear and helpful response that:
+
+1. Directly addresses the user's question or request
+2. Uses educational and supportive language
+3. Provides specific details when referencing images or detections
+4. Offers actionable insights when appropriate
+
+Keep responses conversational but informative."""
 
     def _diagnose_empty_response(self, response, method_name: str) -> str:
         """Diagnose why a Gemini response is empty and return detailed diagnostic message.
@@ -617,9 +733,14 @@ class GeminiService:
 
     def chat_with_images(self, message: str, frame: Optional[np.ndarray] = None,
                         reference: Optional[np.ndarray] = None) -> Optional[str]:
-        """Universal chat method with images in system context.
+        """Universal chat method using Google's Vertex AI structured prompt best practices.
 
-        Images are placed in system context, user message is purely textual.
+        Implements structured prompts with:
+        - TASK: Clear conversational objective
+        - CONTEXT: AI role and conversational guidelines
+        - INPUT DATA: Optional reference and current frame images
+        - OUTPUT REQUIREMENTS: Format for conversational responses
+
         This method handles any combination of images (both, one, or none).
 
         Args:
@@ -650,8 +771,13 @@ class GeminiService:
             image_count = sum(1 for img in [ref_pil, frame_pil] if img is not None)
             logger.info(f"Sending chat message with {image_count} image(s)")
 
-            # Build config with system context (includes images if provided)
+            # Define clear task description following Google's best practices
+            task = "Engage in a helpful conversation with the user, providing clear and informative responses about the provided images or general questions."
+
+            # Build config with structured prompt (following Google's Vertex AI guidelines)
             config = self._build_generation_config(
+                task_description=task,
+                output_format=self._chat_output_format(),
                 ref_image=ref_pil,
                 current_image=frame_pil
             )

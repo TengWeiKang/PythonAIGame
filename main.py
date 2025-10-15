@@ -149,6 +149,9 @@ class MainWindow:
         # Objects management multi-selection state
         self.checked_objects: set[str] = set()  # Set of checked object IDs
 
+        # UI Layout preference - "vertical" (buttons on right) or "horizontal" (buttons on bottom)
+        self.training_objects_layout = "vertical"  # Default to vertical layout
+
         # Check Gemini configuration
         self._gemini_configured = bool(self.config.get('gemini_api_key', '').strip())
 
@@ -704,16 +707,16 @@ class MainWindow:
         self.objects_status_label.pack(padx=10, pady=5)
     
     def _build_objects_management_section(self, parent):
-        """Build the objects management section."""
+        """Build the objects management section with configurable layout."""
         # Objects list frame
         list_frame = tk.Frame(parent, bg=self.COLORS['bg_secondary'])
         list_frame.pack(fill='both', expand=True, padx=5)
-        
+
         # List header
         list_header = tk.Frame(list_frame, bg=self.COLORS['bg_tertiary'], height=30)
         list_header.pack(fill='x')
         list_header.pack_propagate(False)
-        
+
         tk.Label(
             list_header,
             text="Training Objects",
@@ -721,7 +724,7 @@ class MainWindow:
             fg=self.COLORS['text_primary'],
             font=('Segoe UI', 9, 'bold')
         ).pack(side='left', padx=10, pady=5)
-        
+
         # Objects count label
         self.objects_count_label = tk.Label(
             list_header,
@@ -731,11 +734,27 @@ class MainWindow:
             font=('Segoe UI', 8)
         )
         self.objects_count_label.pack(side='right', padx=10, pady=5)
-        
-        # Listbox with scrollbar
-        listbox_frame = tk.Frame(list_frame, bg=self.COLORS['bg_primary'])
-        listbox_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
+
+        # Build layout based on configuration
+        if self.training_objects_layout == "vertical":
+            self._build_vertical_layout(list_frame)
+        else:
+            self._build_horizontal_layout(list_frame)
+
+        # Load initial objects
+        self._refresh_objects_list()
+
+    def _build_vertical_layout(self, parent):
+        """Build vertical layout with listbox on left and buttons on right side."""
+        # Container for listbox and buttons
+        container = tk.Frame(parent, bg=self.COLORS['bg_secondary'])
+        container.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Left side: Listbox with scrollbar (narrower fixed width)
+        listbox_frame = tk.Frame(container, bg=self.COLORS['bg_primary'], width=250)
+        listbox_frame.pack(side='left', fill='y')
+        listbox_frame.pack_propagate(False)  # Maintain fixed width
+
         self._objects_listbox = tk.Listbox(
             listbox_frame,
             bg=self.COLORS['bg_primary'],
@@ -747,11 +766,11 @@ class MainWindow:
             borderwidth=0,
             highlightthickness=0
         )
-        
+
         scrollbar = ttk.Scrollbar(listbox_frame, orient='vertical')
         self._objects_listbox.configure(yscrollcommand=scrollbar.set)
         scrollbar.configure(command=self._objects_listbox.yview)
-        
+
         self._objects_listbox.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
 
@@ -760,13 +779,75 @@ class MainWindow:
 
         # Add click-to-view: single click on object displays it
         self._objects_listbox.bind('<<ListboxSelect>>', self._on_listbox_item_clicked)
-        
-        # Management buttons (increased height to prevent overflow)
-        buttons_frame = tk.Frame(list_frame, bg=self.COLORS['bg_secondary'], height=50)
+
+        # Right side: Buttons in 2-column grid layout
+        buttons_frame = tk.Frame(container, bg=self.COLORS['bg_secondary'])
+        buttons_frame.pack(side='right', fill='both', expand=True, padx=(5, 0))
+
+        # Button configuration: (text, style, command)
+        buttons = [
+            ("☑ Select All", 'Secondary.TButton', self._select_all_objects),
+            ("☐ Deselect All", 'Secondary.TButton', self._deselect_all_objects),
+            ("✏️ Edit", 'Secondary.TButton', self._edit_selected_object),
+            ("🗑️ Delete", 'Secondary.TButton', self._delete_selected_objects),
+            ("🚀 Train Model", 'Modern.TButton', self._train_model_with_all_objects)
+        ]
+
+        # Arrange buttons in 2 columns using grid
+        for idx, (text, style, command) in enumerate(buttons):
+            row = idx // 2  # Integer division for row number
+            col = idx % 2   # Modulo for column (0 or 1)
+
+            btn = ttk.Button(
+                buttons_frame,
+                text=text,
+                style=style,
+                command=command,
+                width=12
+            )
+            btn.grid(row=row, column=col, padx=3, pady=3, sticky='ew')
+
+        # Make both columns expandable equally
+        buttons_frame.columnconfigure(0, weight=1)
+        buttons_frame.columnconfigure(1, weight=1)
+
+    def _build_horizontal_layout(self, parent):
+        """Build horizontal layout with listbox on top and buttons on bottom (original layout)."""
+        # Listbox with scrollbar
+        listbox_frame = tk.Frame(parent, bg=self.COLORS['bg_primary'])
+        listbox_frame.pack(fill='both', expand=True, padx=5, pady=5)
+
+        self._objects_listbox = tk.Listbox(
+            listbox_frame,
+            bg=self.COLORS['bg_primary'],
+            fg=self.COLORS['text_primary'],
+            selectbackground=self.COLORS['accent_primary'],
+            selectforeground=self.COLORS['text_primary'],
+            font=('Segoe UI', 9),
+            selectmode=tk.SINGLE,
+            borderwidth=0,
+            highlightthickness=0
+        )
+
+        scrollbar = ttk.Scrollbar(listbox_frame, orient='vertical')
+        self._objects_listbox.configure(yscrollcommand=scrollbar.set)
+        scrollbar.configure(command=self._objects_listbox.yview)
+
+        self._objects_listbox.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+        # Add mouse wheel support for objects listbox
+        self._objects_listbox.bind('<MouseWheel>', self._on_objects_listbox_mousewheel)
+
+        # Add click-to-view: single click on object displays it
+        self._objects_listbox.bind('<<ListboxSelect>>', self._on_listbox_item_clicked)
+
+        # Management buttons (horizontal layout at bottom)
+        buttons_frame = tk.Frame(parent, bg=self.COLORS['bg_secondary'], height=50)
         buttons_frame.pack(fill='x', pady=(5, 0))
         buttons_frame.pack_propagate(False)
 
-        # Selection control buttons (reduced padding to fit all buttons)
+        # Selection control buttons (horizontal arrangement)
         ttk.Button(
             buttons_frame,
             text="☑ Select All",
@@ -795,17 +876,12 @@ class MainWindow:
             command=self._delete_selected_objects
         ).pack(side='left', padx=1, pady=5)
 
-        # Note: View button removed - clicking on an item in the list now displays it automatically
-
         ttk.Button(
             buttons_frame,
             text="🚀 Train Model",
             style='Modern.TButton',
             command=self._train_model_with_all_objects
         ).pack(side='right', padx=(1, 3), pady=5)
-        
-        # Load initial objects
-        self._refresh_objects_list()
     
     def _build_chat_panel(self):
         """Build the modern ChatBot interface with bubble-style messages."""
@@ -1419,9 +1495,9 @@ class MainWindow:
                 label_text,
                 (x1, y1 - 5),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
+                1.0,  # Increased from 0.5 for better visibility
                 (255, 255, 255),  # White text
-                1,
+                2,  # Increased from 1 for better visibility
                 cv2.LINE_AA
             )
 
@@ -1466,9 +1542,9 @@ class MainWindow:
             f"Objects: {detection_count}",
             (10, 60),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            1.0,  # Increased from 0.6 for better visibility
             (0, 255, 0),  # Green
-            1,
+            2,  # Increased from 1 for better visibility
             cv2.LINE_AA
         )
 
@@ -1888,13 +1964,29 @@ class MainWindow:
     # The new workflow uses _capture_for_training, _load_image_for_training,
     # and _start_object_selection methods instead
 
-    def _refresh_objects_list(self):
+    def _refresh_objects_list(self, preserve_scroll=True):
         """Refresh the objects listbox with checkbox indicators.
 
         Maintains checkbox state after refresh by checking the checked_objects set.
         Displays checkboxes as: ☐ (unchecked) or ☑ (checked)
+
+        Args:
+            preserve_scroll: If True, preserves the current scroll position and selection
         """
         try:
+            # Save current scroll position and selection
+            first_visible = 0
+            current_selection = ()
+            if preserve_scroll:
+                try:
+                    # Get the index of the first visible item
+                    first_visible = self._objects_listbox.nearest(0)
+                    current_selection = self._objects_listbox.curselection()
+                except:
+                    first_visible = 0
+                    current_selection = ()
+
+            # Clear and rebuild listbox
             self._objects_listbox.delete(0, tk.END)
 
             objects = self.training_service.get_all_objects()
@@ -1909,6 +2001,15 @@ class MainWindow:
             self.objects_count_label.config(
                 text=f"({counts['total']} objects)"
             )
+
+            # Restore scroll position and selection
+            if preserve_scroll:
+                # Restore selection first
+                if current_selection:
+                    self._objects_listbox.selection_set(current_selection[0])
+                # Then restore scroll position
+                if first_visible < len(objects):
+                    self._objects_listbox.see(first_visible)
 
         except Exception as e:
             logger.error(f"Error refreshing objects list: {e}")
@@ -2656,6 +2757,7 @@ class MainWindow:
         - *italic* or _italic_
         - ~~strikethrough~~
         - Combined styles (e.g., ***bold italic***)
+        - Bullet points: * item, - item, + item (with proper nesting)
 
         Args:
             text: Text with markdown formatting
@@ -2665,6 +2767,10 @@ class MainWindow:
             'bold', 'italic', 'strikethrough' as applicable
         """
         import re
+
+        # First, handle bullet points line-by-line
+        # This must be done before inline markdown parsing to avoid conflicts
+        text = self._preprocess_bullets(text)
 
         # This will store our result segments
         segments = []
@@ -2706,6 +2812,41 @@ class MainWindow:
             segments.append((plain_text, styles))
 
         return segments if segments else [(text, set())]
+
+    def _preprocess_bullets(self, text: str) -> str:
+        """Preprocess text to convert markdown bullets to visual bullets.
+
+        Handles bullet points that start with *, -, or + followed by space(s).
+        Preserves indentation for nested bullets.
+
+        Args:
+            text: Text with potential markdown bullets
+
+        Returns:
+            Text with markdown bullets replaced by Unicode bullets (•)
+        """
+        import re
+
+        lines = text.split('\n')
+        processed_lines = []
+
+        for line in lines:
+            # Pattern: optional leading spaces, then bullet marker (*, -, +), then space(s), then content
+            # The bullet marker must be followed by at least one space to avoid false positives
+            bullet_match = re.match(r'^(\s*)([*\-+])\s+(.*)$', line)
+
+            if bullet_match:
+                indent = bullet_match.group(1)  # Leading spaces (for nesting)
+                content = bullet_match.group(3)  # Text after bullet marker
+
+                # Replace markdown bullet with Unicode bullet character
+                processed_line = f"{indent}• {content}"
+                processed_lines.append(processed_line)
+            else:
+                # Not a bullet point - keep line as-is
+                processed_lines.append(line)
+
+        return '\n'.join(processed_lines)
 
     def _add_chat_message(self, sender: str, message: str):
         """Add modern bubble-style message to chat display.
